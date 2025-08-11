@@ -1,3 +1,10 @@
+# Ignore configuration files
+config.ini
+
+# Python development environment related ignore items
+__pycache__/
+.Python
+
 # Byte-compiled / optimized / DLL files
 # __pycache__/
 # *.py[codz]

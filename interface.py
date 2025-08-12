@@ -30,7 +30,7 @@ def interactive_loop(
     """常驻交互式循环。接收用户输入并调用回调处理，直到收到退出指令。"""
     console.print(
         Panel(
-            "欢迎使用 TagSnapCLI 概括助手\n"
+            "欢迎使用 TagSnapCLI 语义分割助手\n"
             "- Enter 换行，Ctrl+J 或 Ctrl+S 提交\n"
             "- 输入 \\q 或 \\quit 退出\n",
             title="TagSnapCLI",
@@ -123,6 +123,6 @@ def interactive_loop(
             )
             result_panel_text.append(tokens_line)
 
-        console.print(Panel(result_panel_text, title="概括结果", box=ROUNDED, border_style="green"))
+        console.print(Panel(result_panel_text, title="分割结果", box=ROUNDED, border_style="green"))
 
 

@@ -7,7 +7,8 @@ import textwrap
 
 APP_NAME = "TagSnapCLI"
 CONFIG_FILE = Path.cwd() / "config.ini"
-PROMPT_FILE = Path.cwd() / "prompt.ini"
+PROMPTS_DIR = Path.cwd() / "prompts"
+SEGMENTER_FILE = PROMPTS_DIR / "segmenter.ini"
 
 
 def load_config() -> dict:
@@ -46,7 +47,7 @@ def setup_proxy(proxy_config: dict) -> None:
 
 
 def load_prompt() -> str:
-    '''读取 prompt.ini 中的多行提示词，兼容包含换行的长文本。
+    '''读取 prompts/segmenter.ini 中的多行提示词，兼容包含换行的长文本。
 
     支持以下写法：
     - INI 多行值（在 prompt = 之后的行缩进即可视为同一值）
@@ -59,27 +60,32 @@ def load_prompt() -> str:
         第二行
         """
       （也可使用单引号三引号，不在此处直接展示以避免文档转义冲突）
-    - 如果没有 [summarize] 或没有 prompt 键，则回退为将整个文件作为提示词原文。
+    - 优先从 [prompt] 段读取键 prompt；若无则尝试 [segmenter] 与 [summarize]；
+    - 若仍未找到，则回退为将整个文件作为提示词原文。
     '''
-    if not PROMPT_FILE.exists():
+    if not SEGMENTER_FILE.exists():
         raise FileNotFoundError(
-            f"未找到 {PROMPT_FILE.name}，请先运行: python main.py init 或根据 README 创建提示文件"
+            f"未找到 {SEGMENTER_FILE.as_posix()}，请先运行: python main.py init 或根据 README 创建提示文件"
         )
 
     # 用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
     parser = configparser.RawConfigParser()
     try:
-        parser.read(PROMPT_FILE, encoding="utf-8")
+        parser.read(SEGMENTER_FILE, encoding="utf-8")
     except Exception:
         parser = None
 
     prompt_text: str = ""
 
-    if parser and parser.has_section("summarize") and parser.has_option("summarize", "prompt"):
-        prompt_text = parser.get("summarize", "prompt", raw=True, fallback="")
+    if parser:
+        section_candidates = ["prompt", "segmenter", "summarize"]
+        for section in section_candidates:
+            if parser.has_section(section) and parser.has_option(section, "prompt"):
+                prompt_text = parser.get(section, "prompt", raw=True, fallback="")
+                break
     else:
         # 回退：将整个文件视为提示词原文
-        prompt_text = PROMPT_FILE.read_text(encoding="utf-8")
+        prompt_text = SEGMENTER_FILE.read_text(encoding="utf-8")
 
     # 处理三引号包裹
     stripped = prompt_text.strip()
@@ -93,10 +99,14 @@ def load_prompt() -> str:
     prompt_text = textwrap.dedent(prompt_text).strip("\n")
 
     if not prompt_text:
-        # 提供一个合理默认值
+        # 提供一个合理默认值（语义分割）
         prompt_text = (
-            "你是一个高效的中文文本总结助手。用简洁、客观、分点的方式概括给定文本的关键信息。"
-            "禁止夸大，不编造事实，不加入主观评价。"
+            "你是一个精准的中文语义分割助手。请将输入文本按语义主题划分为若干段落：\n"
+            "- 保障每一段内部主题一致，跨段主题尽量独立；\n"
+            "- 为每段生成短标题（不超过12字），并给出1-3句简要描述；\n"
+            "- 保留关键数据、时间、人物与因果；\n"
+            "- 输出 JSON 数组，每个元素包含 title、summary、text 字段；\n"
+            "- 不要附加其他说明。"
         )
     return prompt_text
 
@@ -120,18 +130,20 @@ def init_files(force: bool = False) -> None:
 
     sample_prompt = textwrap.dedent(
         """
-        [summarize]
-        # 用于文本概括的提示词（支持多行，缩进行即可）：
+        [prompt]
+        # 用于语义分割的提示词（支持多行，缩进行即可）：
         prompt =
-            你是一个高效的中文文本总结助手。请对用户提供的长文本进行准确、客观的概括：
-            - 使用1-5个要点分条总结；
-            - 保留关键数据、结论与限制条件；
-            - 不编造事实，不加入主观评价；
-            - 输出只包含总结内容，不要前后缀说明。
+            你是一个精准的中文语义分割助手。请将输入文本按语义主题划分为若干段落：
+            - 保障每一段内部主题一致，跨段主题尽量独立；
+            - 为每段生成短标题（不超过12字），并给出1-3句简要描述；
+            - 保留关键数据、时间、人物与因果；
+            - 输出 JSON 数组，每个元素包含 title、summary、text 字段；
+            - 不要附加其他说明。
         """
     ).strip()
 
-    for path, content in [(CONFIG_FILE, sample_config), (PROMPT_FILE, sample_prompt)]:
+    PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    for path, content in [(CONFIG_FILE, sample_config), (SEGMENTER_FILE, sample_prompt)]:
         if path.exists() and not force:
             print(f"跳过：{path.name} 已存在。如需覆盖，请加 --force")
             continue

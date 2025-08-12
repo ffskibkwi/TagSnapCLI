@@ -7,7 +7,6 @@ from typing import Optional
 
 import typer
 
-
 APP_NAME = "TagSnapCLI"
 CONFIG_FILE = Path.cwd() / "config.ini"
 PROMPT_FILE = Path.cwd() / "prompt.ini"

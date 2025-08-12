@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 def build_model(api_key: str, model_name: str, system_instruction: str):
@@ -18,8 +18,8 @@ def build_model(api_key: str, model_name: str, system_instruction: str):
     return model
 
 
-def summarize_text(model, text: str, temperature: float = 0.3) -> str:
-    """调用 Gemini 对文本进行概括。"""
+def summarize_text(model, text: str, temperature: float = 0.3) -> Dict[str, Any]:
+    """调用 Gemini 对文本进行概括，返回文本与 token 用量信息。"""
     response = model.generate_content(
         text,
         generation_config={
@@ -41,6 +41,19 @@ def summarize_text(model, text: str, temperature: float = 0.3) -> str:
     if not output:
         raise RuntimeError("未从模型获取到有效输出")
 
-    return output.strip()
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = None
+    if usage_meta is not None:
+        # 兼容字段名
+        prompt_tokens = getattr(usage_meta, "prompt_token_count", None)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", None)
+        total_tokens = getattr(usage_meta, "total_token_count", None)
+        usage = {
+            "prompt": prompt_tokens,
+            "completion": completion_tokens,
+            "total": total_tokens,
+        }
+
+    return {"text": output.strip(), "usage": usage}
 
 

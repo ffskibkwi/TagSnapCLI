@@ -22,7 +22,7 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
     prompt = load_prompt()
     model = build_model(cfg["api_key"], cfg["model"], prompt)
 
-    def on_submit(text: str) -> str:
+    def on_submit(text: str):
         return summarize_text(model, text, temperature=temperature)
 
     interactive_loop(on_submit)

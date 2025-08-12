@@ -6,6 +6,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.box import ROUNDED
 from rich.text import Text
+from rich.live import Live
+from rich.spinner import Spinner
 
 # prompt_toolkit 用于自适应尺寸的输入框
 try:
@@ -104,10 +106,23 @@ def interactive_loop(
             console.print("请输入非空文本。", style="yellow")
             continue
 
-        try:
-            result = on_submit(user_text)
-            console.print(Panel(result, title="概括结果", box=ROUNDED, border_style="green"))
-        except Exception as exc:  # 展示错误但不中断循环
-            console.print(Panel(str(exc), title="错误", box=ROUNDED, border_style="red"))
+        # 提交后展示实时状态
+        with Live(Spinner("dots", text="分析中…", style="cyan"), console=console, refresh_per_second=12):
+            try:
+                result = on_submit(user_text)
+            except Exception as exc:  # 展示错误但不中断循环
+                result = {"text": f"错误：{exc}", "usage": None}
+
+        text = result.get("text", "") if isinstance(result, dict) else str(result)
+        usage = result.get("usage") if isinstance(result, dict) else None
+
+        result_panel_text = Text.from_markup(text)
+        if usage:
+            tokens_line = (
+                f"\n[dim]tokens: prompt={usage.get('prompt')}, completion={usage.get('completion')}, total={usage.get('total')}[/dim]"
+            )
+            result_panel_text.append(tokens_line)
+
+        console.print(Panel(result_panel_text, title="概括结果", box=ROUNDED, border_style="green"))
 
 

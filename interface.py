@@ -1,9 +1,22 @@
 from typing import Callable
+import sys
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.box import ROUNDED
+from rich.text import Text
+
+# prompt_toolkit 用于自适应尺寸的输入框
+try:
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.widgets import Frame, TextArea
+    from prompt_toolkit.styles import Style
+    PROMPT_TOOLKIT_AVAILABLE = True
+except Exception:
+    PROMPT_TOOLKIT_AVAILABLE = False
 
 
 console = Console()
@@ -25,20 +38,51 @@ def interactive_loop(
     )
 
     def read_inside_rounded_box() -> str:
-        # 计算框宽度（留出两侧页边距）
+        if PROMPT_TOOLKIT_AVAILABLE:
+            textarea = TextArea(
+                multiline=True,  # 允许自动换行并随内容增高
+                wrap_lines=True,
+                focus_on_click=True,
+            )
+
+            frame = Frame(body=textarea, title="", style="class:input-frame")
+
+            kb = KeyBindings()
+
+            @kb.add("enter")
+            def _(event):
+                # 直接提交（而不是换行），便于一键回车提交
+                event.app.exit(result=textarea.text)
+
+            style = Style.from_dict({
+                # 边框颜色为白色（兼容旧版本 prompt_toolkit 的颜色名）
+                "frame.border": "ansiwhite",
+                "input-frame": "",
+            })
+
+            app = Application(
+                layout=Layout(frame),
+                key_bindings=kb,
+                full_screen=False,  # 非全屏，嵌入在现有终端输出
+                mouse_support=False,
+                style=style,
+            )
+            return app.run()
+
+        # 回退方案：使用固定框 + ANSI 移动（不支持自增高）
         term_width = console.size.width
         inner_width = max(20, min(80, term_width - 6))
         top = f"[white]╭{'─' * inner_width}╮[/white]"
+        mid = f"[white]│{' ' * inner_width}│[/white]"
         bottom = f"[white]╰{'─' * inner_width}╯[/white]"
-
-        # 顶部边框
         console.print(top)
-        # 左边框 + 输入光标。此处将光标放在左墙后的空格处
-        prompt_str = "[white]│ [/white]"
-        # 使用 console.input 渲染富文本提示，从而使光标位于白色竖线之后
-        text = console.input(prompt_str)
-        # 底部边框
+        console.print(mid)
         console.print(bottom)
+        sys.stdout.write("\x1b[2A\r\x1b[1C")
+        sys.stdout.flush()
+        text = input()
+        sys.stdout.write("\x1b[1B\r")
+        sys.stdout.flush()
         return text
 
     while True:

@@ -29,7 +29,7 @@ def interactive_loop(
     console.print(
         Panel(
             "欢迎使用 TagSnapCLI 概括助手\n"
-            "- 粘贴/输入任意长度文本后回车提交\n"
+            "- Enter 换行，Ctrl+J 或 Ctrl+S 提交\n"
             "- 输入 \\q 或 \\quit 退出\n",
             title="TagSnapCLI",
             box=ROUNDED,
@@ -49,9 +49,13 @@ def interactive_loop(
 
             kb = KeyBindings()
 
-            @kb.add("enter")
+            # 使用 Ctrl+J 或 Ctrl+S 提交，保留 Enter 作为换行
+            @kb.add("c-j")
             def _(event):
-                # 直接提交（而不是换行），便于一键回车提交
+                event.app.exit(result=textarea.text)
+
+            @kb.add("c-s")
+            def _(event):
                 event.app.exit(result=textarea.text)
 
             style = Style.from_dict({

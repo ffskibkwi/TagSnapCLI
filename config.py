@@ -2,6 +2,7 @@ import os
 import textwrap
 from pathlib import Path
 import configparser
+import textwrap
 
 
 APP_NAME = "TagSnapCLI"
@@ -45,25 +46,59 @@ def setup_proxy(proxy_config: dict) -> None:
 
 
 def load_prompt() -> str:
-    """读取 prompt.ini 中的总结提示语。"""
+    '''读取 prompt.ini 中的多行提示词，兼容包含换行的长文本。
+
+    支持以下写法：
+    - INI 多行值（在 prompt = 之后的行缩进即可视为同一值）
+        prompt =
+            第一行
+            第二行
+    - 三引号包裹（单行/多行均可，示例为双引号三引号）：
+        prompt = """
+        第一行
+        第二行
+        """
+      （也可使用单引号三引号，不在此处直接展示以避免文档转义冲突）
+    - 如果没有 [summarize] 或没有 prompt 键，则回退为将整个文件作为提示词原文。
+    '''
     if not PROMPT_FILE.exists():
         raise FileNotFoundError(
             f"未找到 {PROMPT_FILE.name}，请先运行: python main.py init 或根据 README 创建提示文件"
         )
 
-    parser = configparser.ConfigParser()
-    parser.read(PROMPT_FILE, encoding="utf-8")
+    # 用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(PROMPT_FILE, encoding="utf-8")
+    except Exception:
+        parser = None
 
-    if not parser.has_section("summarize"):
-        raise KeyError("prompt.ini 缺少 [summarize] 配置段")
+    prompt_text: str = ""
 
-    prompt = parser.get("summarize", "prompt", fallback="")
-    if not prompt:
-        prompt = (
+    if parser and parser.has_section("summarize") and parser.has_option("summarize", "prompt"):
+        prompt_text = parser.get("summarize", "prompt", raw=True, fallback="")
+    else:
+        # 回退：将整个文件视为提示词原文
+        prompt_text = PROMPT_FILE.read_text(encoding="utf-8")
+
+    # 处理三引号包裹
+    stripped = prompt_text.strip()
+    if (stripped.startswith('"""') and stripped.endswith('"""')) or (
+        stripped.startswith("'''") and stripped.endswith("'''")
+    ):
+        prompt_text = stripped[3:-3]
+
+    # 统一换行并去除最外层公共缩进
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    prompt_text = textwrap.dedent(prompt_text).strip("\n")
+
+    if not prompt_text:
+        # 提供一个合理默认值
+        prompt_text = (
             "你是一个高效的中文文本总结助手。用简洁、客观、分点的方式概括给定文本的关键信息。"
             "禁止夸大，不编造事实，不加入主观评价。"
         )
-    return prompt
+    return prompt_text
 
 
 def init_files(force: bool = False) -> None:
@@ -86,12 +121,13 @@ def init_files(force: bool = False) -> None:
     sample_prompt = textwrap.dedent(
         """
         [summarize]
-        # 用于文本概括的提示词
-        prompt = 你是一个高效的中文文本总结助手。请对用户提供的长文本进行准确、客观的概括：\
-                 - 使用1-5个要点分条总结；\
-                 - 保留关键数据、结论与限制条件；\
-                 - 不编造事实，不加入主观评价；\
-                 - 输出只包含总结内容，不要前后缀说明。
+        # 用于文本概括的提示词（支持多行，缩进行即可）：
+        prompt =
+            你是一个高效的中文文本总结助手。请对用户提供的长文本进行准确、客观的概括：
+            - 使用1-5个要点分条总结；
+            - 保留关键数据、结论与限制条件；
+            - 不编造事实，不加入主观评价；
+            - 输出只包含总结内容，不要前后缀说明。
         """
     ).strip()
 

@@ -1,14 +1,36 @@
 import os
+import json
+import sys
 import textwrap
 from pathlib import Path
 import configparser
 import textwrap
+import numpy as np
 
+# 动态检查并导入依赖
+try:
+    import chromadb
+except ImportError:
+    print("错误: 核心依赖 'chromadb' 未安装。", file=sys.stderr)
+    print("请在命令行中运行: pip install chromadb", file=sys.stderr)
+    sys.exit(1)
+
+# 从 ollama_demo.py 导入可重用的函数
+try:
+    from ollama_demo import load_embedding_config, call_ollama_embeddings, _extract_embedding
+except ImportError:
+    print("错误: 无法从 ollama_demo.py 导入所需函数。", file=sys.stderr)
+    print("请确保 ollama_demo.py 与当前文件在同一目录下。", file=sys.stderr)
+    sys.exit(1)
 
 APP_NAME = "TagSnapCLI"
 CONFIG_FILE = Path.cwd() / "config.ini"
 PROMPTS_DIR = Path.cwd() / "prompts"
 SEGMENTER_FILE = PROMPTS_DIR / "segmenter.ini"
+TAG_FILE = PROMPTS_DIR / "tag.ini"
+VOCAB_FILE = Path.cwd() / "init_tag_lab.json"
+DB_PATH = Path.cwd() / "chroma_db_cosine"
+COLLECTION_NAME = "tag_embeddings_cosine"
 
 
 def load_config() -> dict:
@@ -44,6 +66,211 @@ def setup_proxy(proxy_config: dict) -> None:
         os.environ["http_proxy"] = proxy_config["http"]
     if proxy_config.get("https"):
         os.environ["https_proxy"] = proxy_config["https"]
+
+
+def normalize_vector(vector: list) -> list:
+    """
+    将输入的向量进行 L2 归一化处理。
+
+    Args:
+        vector (list): 原始向量。
+
+    Returns:
+        list: 归一化后的向量（单位向量）。
+    """
+    if not vector:
+        return []
+    # 使用 numpy 计算向量的 L2 范数（即向量的长度）
+    np_vector = np.array(vector, dtype=np.float32)
+    norm = np.linalg.norm(np_vector)
+    # 如果范数为0（即零向量），则直接返回原向量以避免除以零的错误
+    if norm == 0:
+        return vector
+    # 向量的每个分量都除以范数
+    normalized_vector = np_vector / norm
+    return normalized_vector.tolist()
+
+
+def init_vector_database() -> tuple:
+    """
+    初始化向量数据库，如果数据库为空则填充数据。
+    
+    Returns:
+        tuple: (chromadb_client, collection)
+    """
+    print(f"正在加载或创建向量数据库于: {DB_PATH}")
+    client = chromadb.PersistentClient(path=str(DB_PATH))
+    
+    # 创建或获取集合，使用余弦距离
+    print(f"加载或创建集合: {COLLECTION_NAME} (使用余弦距离)")
+    collection = client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"}
+    )
+    
+    # 检查数据库是否需要填充数据
+    if collection.count() == 0:
+        print("数据库为空，正在从词库文件填充数据...")
+        
+        if not VOCAB_FILE.exists():
+            raise FileNotFoundError(f"错误: 词库文件 {VOCAB_FILE} 不存在。")
+            
+        with open(VOCAB_FILE, "r", encoding="utf-8") as f:
+            words = json.load(f)
+        
+        if not isinstance(words, list) or not words:
+            raise ValueError(f"错误: {VOCAB_FILE} 内容格式不正确或为空。")
+
+        try:
+            base_url, model = load_embedding_config(CONFIG_FILE)
+            print(f"使用 Ollama 服务: {base_url} | 模型: {model}")
+        except Exception as e:
+            raise RuntimeError(f"错误: 加载 Ollama 配置失败: {e}")
+
+        print(f"正在为 {len(words)} 个词生成向量并存入数据库，请稍候...")
+        embeddings_to_add = []
+        for i, word in enumerate(words):
+            try:
+                resp_json = call_ollama_embeddings(base_url, model, word)
+                vector = _extract_embedding(resp_json)
+                # 在存入数据库前进行归一化
+                normalized_vector = normalize_vector(vector)
+                embeddings_to_add.append(normalized_vector)
+                print(f"  ({i+1}/{len(words)}) 已处理: '{word}'")
+            except Exception as e:
+                raise RuntimeError(f"错误: 为 '{word}' 生成向量时失败: {e}")
+        
+        collection.add(
+            embeddings=embeddings_to_add,
+            metadatas=[{"word": w} for w in words],
+            ids=words
+        )
+        print("数据库填充完成！")
+    else:
+        print(f"数据库已加载，包含 {collection.count()} 个词条。")
+    
+    return client, collection
+
+
+def get_similar_tags(text: str, collection, n_results: int = 10) -> list:
+    """
+    获取与输入文本最相似的标签。
+    
+    Args:
+        text (str): 输入文本
+        collection: ChromaDB集合
+        n_results (int): 返回结果数量
+        
+    Returns:
+        list: 最相似的标签列表
+    """
+    try:
+        base_url, model = load_embedding_config(CONFIG_FILE)
+    except Exception as e:
+        raise RuntimeError(f"错误: 加载 Ollama 配置失败: {e}")
+    
+    # 为查询文本生成向量
+    try:
+        resp_json = call_ollama_embeddings(base_url, model, text)
+        query_vector = _extract_embedding(resp_json)
+        normalized_query_vector = normalize_vector(query_vector)
+    except Exception as e:
+        raise RuntimeError(f"错误: 生成查询向量失败: {e}")
+    
+    # 在数据库中查询相似标签
+    results = collection.query(
+        query_embeddings=[normalized_query_vector],
+        n_results=n_results
+    )
+    
+    metadatas = results.get('metadatas', [[]])[0]
+    if not metadatas:
+        return []
+    
+    return [meta.get('word', 'N/A') for meta in metadatas]
+
+
+def update_vector_database(collection, new_tags: list) -> None:
+    """
+    将新标签添加到向量数据库中。
+    
+    Args:
+        collection: ChromaDB集合
+        new_tags (list): 新标签列表
+    """
+    if not new_tags:
+        return
+    
+    try:
+        base_url, model = load_embedding_config(CONFIG_FILE)
+    except Exception as e:
+        print(f"警告: 无法更新向量数据库 - 加载 Ollama 配置失败: {e}")
+        return
+    
+    print(f"正在将 {len(new_tags)} 个新标签添加到向量数据库...")
+    embeddings_to_add = []
+    metadatas_to_add = []
+    ids_to_add = []
+    
+    for tag in new_tags:
+        # 检查标签是否已存在
+        try:
+            existing = collection.get(ids=[tag])
+            if existing['ids']:
+                continue  # 标签已存在，跳过
+        except:
+            pass  # 标签不存在，继续添加
+        
+        try:
+            resp_json = call_ollama_embeddings(base_url, model, tag)
+            vector = _extract_embedding(resp_json)
+            normalized_vector = normalize_vector(vector)
+            embeddings_to_add.append(normalized_vector)
+            metadatas_to_add.append({"word": tag})
+            ids_to_add.append(tag)
+        except Exception as e:
+            print(f"警告: 为标签 '{tag}' 生成向量时失败: {e}")
+    
+    if embeddings_to_add:
+        collection.add(
+            embeddings=embeddings_to_add,
+            metadatas=metadatas_to_add,
+            ids=ids_to_add
+        )
+        print(f"成功添加 {len(embeddings_to_add)} 个新标签到向量数据库")
+
+
+def load_tag_prompt() -> str:
+    """
+    从 prompts/tag.ini 中加载标签生成的提示词。
+    """
+    if not TAG_FILE.exists():
+        raise FileNotFoundError(
+            f"未找到 {TAG_FILE.as_posix()}，请确保文件存在"
+        )
+    
+    # 使用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(TAG_FILE, encoding="utf-8")
+    except Exception as e:
+        raise ValueError(f"无法读取配置文件: {e}")
+    
+    prompt_text: str = ""
+    
+    if parser.has_section("tag") and parser.has_option("tag", "prompt"):
+        prompt_text = parser.get("tag", "prompt", raw=True, fallback="")
+    else:
+        raise ValueError("未找到 [tag] 段落或 prompt 配置项")
+    
+    # 统一换行并去除最外层公共缩进
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    prompt_text = textwrap.dedent(prompt_text).strip("\n")
+    
+    if not prompt_text:
+        raise ValueError(f"{TAG_FILE} 中的提示词内容为空")
+    
+    return prompt_text
 
 
 def load_prompt() -> str:
@@ -120,6 +347,12 @@ def init_files(force: bool = False) -> None:
         api_key = YOUR_API_KEY_HERE
         # 可选：模型名称，常用：gemini-1.5-flash 或 gemini-1.5-pro
         model = gemini-1.5-flash
+
+        [embedding]
+        # Ollama 服务地址，用于向量嵌入
+        ip_addr = http://127.0.0.1:11434
+        # 嵌入模型名称，推荐使用 bge-m3
+        model = bge-m3
 
         [proxy]
         # 可选：HTTP/HTTPS 代理。示例：http://127.0.0.1:7890

@@ -1,5 +1,6 @@
-from typing import Callable
+from typing import Callable, Dict, Any
 import sys
+import json
 
 import typer
 from rich.console import Console
@@ -8,6 +9,9 @@ from rich.box import ROUNDED
 from rich.text import Text
 from rich.live import Live
 from rich.spinner import Spinner
+from rich.table import Table
+from rich.columns import Columns
+from rich.syntax import Syntax
 
 # prompt_toolkit 用于自适应尺寸的输入框
 try:
@@ -24,16 +28,83 @@ except Exception:
 console = Console()
 
 
+def format_tag_analysis_result(result: Dict[str, Any]) -> Text:
+    """
+    格式化标签分析结果为可读的显示内容。
+    
+    Args:
+        result (Dict[str, Any]): 分析结果
+        
+    Returns:
+        Text: 格式化后的显示内容
+    """
+    output = Text()
+    
+    if "analysis_result" in result:
+        analysis = result["analysis_result"]
+        similar_tags = result.get("similar_tags", [])
+        
+        # 显示相似标签
+        if similar_tags:
+            output.append("⚡ 检索到的相似标签:\n", style="bold blue")
+            output.append(", ".join(similar_tags[:10]))
+            output.append("\n\n")
+        
+        parsed_result = analysis.get("result", {})
+        
+        # 显示匹配的标签
+        matched_tags = parsed_result.get("matched_tags", [])
+        if matched_tags:
+            output.append("✅ 匹配的标签:\n", style="bold green")
+            for tag in matched_tags:
+                output.append(f"  • {tag}\n")
+        else:
+            output.append("❌ 未找到匹配的标签\n", style="yellow")
+        
+        # 显示补充标签
+        supplementary_tags = parsed_result.get("supplementary_tags", [])
+        if supplementary_tags:
+            output.append("\n✨ 补充标签:\n", style="bold magenta")
+            for tag in supplementary_tags:
+                output.append(f"  • {tag}\n")
+        
+        # 显示分析说明
+        notes = parsed_result.get("tagging_notes", "")
+        if notes:
+            output.append("\n📝 分析说明:\n", style="bold cyan")
+            output.append(notes)
+            output.append("\n")
+        
+        # 如果有JSON解析错误，显示原始输出
+        if "解析失败" in notes:
+            raw_output = analysis.get("raw_output", "")
+            if raw_output:
+                output.append("\n🔍 原始输出:\n", style="dim")
+                output.append(raw_output[:500])  # 限制长度
+                if len(raw_output) > 500:
+                    output.append("...", style="dim")
+    
+    elif "text" in result:
+        # 错误情况或原有的简单格式
+        output.append(result["text"])
+    
+    else:
+        output.append("未知的结果格式")
+    
+    return output
+
+
 def interactive_loop(
-    on_submit: Callable[[str], str],
+    on_submit: Callable[[str], Dict[str, Any]],
 ) -> None:
     """常驻交互式循环。接收用户输入并调用回调处理，直到收到退出指令。"""
     console.print(
         Panel(
-            "欢迎使用 TagSnapCLI 语义分割助手\n"
+            "欢迎使用 TagSnapCLI 标签分析助手\n"
             "- Enter 换行，Ctrl+J 或 Ctrl+S 提交\n"
-            "- 输入 \\q 或 \\quit 退出\n",
-            title="TagSnapCLI",
+            "- 输入 \\q 或 \\quit 退出\n"
+            "\n🎆 功能：智能标签匹配 + 补充标签发现 + 向量数据库自动更新",
+            title="TagSnapCLI - AI 标签分析",
             box=ROUNDED,
             border_style="cyan",
         )
@@ -107,22 +178,62 @@ def interactive_loop(
             continue
 
         # 提交后展示实时状态
-        with Live(Spinner("dots", text="分析中…", style="cyan"), console=console, refresh_per_second=12):
+        with Live(Spinner("dots", text="正在分析标签…", style="cyan"), console=console, refresh_per_second=12):
             try:
                 result = on_submit(user_text)
             except Exception as exc:  # 展示错误但不中断循环
                 result = {"text": f"错误：{exc}", "usage": None}
 
-        text = result.get("text", "") if isinstance(result, dict) else str(result)
-        usage = result.get("usage") if isinstance(result, dict) else None
+        # 格式化显示结果
+        if isinstance(result, dict):
+            result_panel_text = format_tag_analysis_result(result)
+            usage = result.get("usage")
+            
+            if usage and usage.get("total"):
+                tokens_line = (
+                    f"\n[dim]tokens: prompt={usage.get('prompt')}, completion={usage.get('completion')}, total={usage.get('total')}[/dim]"
+                )
+                result_panel_text.append(tokens_line)
+        else:
+            result_panel_text = Text(str(result))
 
-        result_panel_text = Text.from_markup(text)
-        if usage:
-            tokens_line = (
-                f"\n[dim]tokens: prompt={usage.get('prompt')}, completion={usage.get('completion')}, total={usage.get('total')}[/dim]"
-            )
-            result_panel_text.append(tokens_line)
-
-        console.print(Panel(result_panel_text, title="分割结果", box=ROUNDED, border_style="green"))
+        console.print(Panel(result_panel_text, title="🏷️ 标签分析结果", box=ROUNDED, border_style="green"))
 
 
+def display_tag_analysis_table(matched_tags: list, supplementary_tags: list, similar_tags: list) -> Table:
+    """
+    创建一个表格显示所有标签信息。
+    
+    Args:
+        matched_tags (list): 匹配的标签
+        supplementary_tags (list): 补充标签
+        similar_tags (list): 相似标签
+        
+    Returns:
+        Table: 格式化的表格
+    """
+    table = Table(title="标签分析详情")
+    
+    table.add_column("类型", style="cyan", no_wrap=True)
+    table.add_column("数量", style="magenta")
+    table.add_column("标签列表", style="green")
+    
+    table.add_row(
+        "相似标签",
+        str(len(similar_tags)),
+        ", ".join(similar_tags)
+    )
+    
+    table.add_row(
+        "匹配标签",
+        str(len(matched_tags)),
+        ", ".join(matched_tags) if matched_tags else "无"
+    )
+    
+    table.add_row(
+        "补充标签",
+        str(len(supplementary_tags)),
+        ", ".join(supplementary_tags) if supplementary_tags else "无"
+    )
+    
+    return table

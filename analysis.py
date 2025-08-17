@@ -21,6 +21,9 @@ def build_model(api_key: str, model_name: str, system_instruction: str):
 
 def segment_text(model, text: str, temperature: float = 0.3) -> Dict[str, Any]:
     """调用 Gemini 对文本进行语义分割，返回结果与 token 用量信息。"""
+    # 1. 本地计算输入文本的 token
+    input_tokens = model.count_tokens(text).total_tokens
+
     response = model.generate_content(
         text,
         generation_config={
@@ -45,13 +48,19 @@ def segment_text(model, text: str, temperature: float = 0.3) -> Dict[str, Any]:
     usage_meta = getattr(response, "usage_metadata", None)
     usage = None
     if usage_meta is not None:
-        # 兼容字段名
-        prompt_tokens = getattr(usage_meta, "prompt_token_count", None)
-        completion_tokens = getattr(usage_meta, "candidates_token_count", None)
-        total_tokens = getattr(usage_meta, "total_token_count", None)
+        # 2. 从 API 获取总的 prompt token 和输出 token
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+
+        # 3. 计算系统指令的 token
+        # 总 prompt token = 系统指令 token + 输入文本 token
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        
         usage = {
-            "prompt": prompt_tokens,
-            "completion": completion_tokens,
+            "input": input_tokens,
+            "prompt": system_prompt_tokens,
+            "output": completion_tokens,
             "total": total_tokens,
         }
 
@@ -79,6 +88,9 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
     
     # 将输入数据转换为JSON字符串，作为用户输入传递给模型
     json_input = json.dumps(input_data, ensure_ascii=False, indent=2)
+
+    # 1. 本地计算输入文本的 token
+    input_tokens = model.count_tokens(json_input).total_tokens
     
     response = model.generate_content(
         json_input,
@@ -132,13 +144,18 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
     usage_meta = getattr(response, "usage_metadata", None)
     usage = None
     if usage_meta is not None:
-        # 兼容字段名
-        prompt_tokens = getattr(usage_meta, "prompt_token_count", None)
-        completion_tokens = getattr(usage_meta, "candidates_token_count", None)
-        total_tokens = getattr(usage_meta, "total_token_count", None)
+        # 2. 从 API 获取总的 prompt token 和输出 token
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+
+        # 3. 计算系统指令的 token
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        
         usage = {
-            "prompt": prompt_tokens,
-            "completion": completion_tokens,
+            "input": input_tokens,
+            "prompt": system_prompt_tokens,
+            "output": completion_tokens,
             "total": total_tokens,
         }
 
@@ -147,6 +164,7 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
         "raw_output": output.strip(),
         "usage": usage
     }
+
 
 
 def extract_all_tags(analysis_result: Dict[str, Any]) -> List[str]:

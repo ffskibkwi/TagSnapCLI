@@ -2,4 +2,4 @@ typer>=0.12.3
 google-generativeai>=0.8.2
 rich>=13.7.1
 prompt_toolkit>=3.0.47
-
+pyperclip>=1.8.2

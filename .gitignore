@@ -1,6 +1,12 @@
 # Ignore configuration files
 config.ini
 
+# Database files - 向量数据库文件
+chroma_db_cosine/
+*.sqlite3
+*.db
+*.bin
+
 # Python development environment related ignore items
 __pycache__/
 .Python

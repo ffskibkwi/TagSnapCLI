@@ -41,12 +41,12 @@ def init(force: bool = typer.Option(False, "--force", help="如存在则覆盖�
     else:
         print("✗ 缺少 init_tag_lab.json 词库文件")
     
-    # 检查tag_seg.ini
-    tag_seg_file = Path.cwd() / "prompts" / "tag_seg.ini"
+    # 检查tag_seg.prompt
+    tag_seg_file = Path.cwd() / "prompts" / "tag_seg.prompt"
     if tag_seg_file.exists():
-        print("✓ prompts/tag_seg.ini 存在")
+        print("✓ prompts/tag_seg.prompt 存在")
     else:
-        print("✗ 缺少 prompts/tag_seg.ini 文件")
+        print("✗ 缺少 prompts/tag_seg.prompt 文件")
 
 
 @app.command()

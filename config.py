@@ -26,9 +26,9 @@ except ImportError:
 APP_NAME = "TagSnapCLI"
 CONFIG_FILE = Path.cwd() / "config.ini"
 PROMPTS_DIR = Path.cwd() / "prompts"
-SEGMENTER_FILE = PROMPTS_DIR / "segmenter.ini"
-TAG_FILE = PROMPTS_DIR / "tag.ini"
-TAG_SEG_FILE = PROMPTS_DIR / "tag_seg.ini"
+SEGMENTER_FILE = PROMPTS_DIR / "segmenter.prompt"
+TAG_FILE = PROMPTS_DIR / "tag.prompt"
+TAG_SEG_FILE = PROMPTS_DIR / "tag_seg.prompt"
 VOCAB_FILE = Path.cwd() / "init_tag_lab.json"
 DB_PATH = Path.cwd() / "chroma_db_cosine"
 COLLECTION_NAME = "tag_embeddings_cosine"
@@ -243,30 +243,21 @@ def update_vector_database(collection, new_tags: list) -> None:
 
 def load_tag_prompt() -> str:
     """
-    从 prompts/tag.ini 中加载标签生成的提示词。
+    从 prompts/tag.prompt 中加载标签生成的提示词。
     """
     if not TAG_FILE.exists():
         raise FileNotFoundError(
             f"未找到 {TAG_FILE.as_posix()}，请确保文件存在"
         )
     
-    # 使用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
-    parser = configparser.RawConfigParser()
     try:
-        parser.read(TAG_FILE, encoding="utf-8")
+        prompt_text = TAG_FILE.read_text(encoding="utf-8")
     except Exception as e:
-        raise ValueError(f"无法读取配置文件: {e}")
-    
-    prompt_text: str = ""
-    
-    if parser.has_section("tag") and parser.has_option("tag", "prompt"):
-        prompt_text = parser.get("tag", "prompt", raw=True, fallback="")
-    else:
-        raise ValueError("未找到 [tag] 段落或 prompt 配置项")
+        raise ValueError(f"无法读取prompt文件: {e}")
     
     # 统一换行并去除最外层公共缩进
     prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
-    prompt_text = textwrap.dedent(prompt_text).strip("\n")
+    prompt_text = textwrap.dedent(prompt_text).strip()
     
     if not prompt_text:
         raise ValueError(f"{TAG_FILE} 中的提示词内容为空")
@@ -276,30 +267,21 @@ def load_tag_prompt() -> str:
 
 def load_tag_seg_prompt() -> str:
     """
-    从 prompts/tag_seg.ini 中加载标签分析的提示词。
+    从 prompts/tag_seg.prompt 中加载标签分析的提示词。
     """
     if not TAG_SEG_FILE.exists():
         raise FileNotFoundError(
             f"未找到 {TAG_SEG_FILE.as_posix()}，请确保文件存在"
         )
     
-    # 使用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
-    parser = configparser.RawConfigParser()
     try:
-        parser.read(TAG_SEG_FILE, encoding="utf-8")
+        prompt_text = TAG_SEG_FILE.read_text(encoding="utf-8")
     except Exception as e:
-        raise ValueError(f"无法读取配置文件: {e}")
-    
-    prompt_text: str = ""
-    
-    if parser.has_section("tag") and parser.has_option("tag", "prompt"):
-        prompt_text = parser.get("tag", "prompt", raw=True, fallback="")
-    else:
-        raise ValueError("未找到 [tag] 段落或 prompt 配置项")
+        raise ValueError(f"无法读取prompt文件: {e}")
     
     # 统一换行并去除最外层公共缩进
     prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
-    prompt_text = textwrap.dedent(prompt_text).strip("\n")
+    prompt_text = textwrap.dedent(prompt_text).strip()
     
     if not prompt_text:
         raise ValueError(f"{TAG_SEG_FILE} 中的提示词内容为空")
@@ -308,56 +290,20 @@ def load_tag_seg_prompt() -> str:
 
 
 def load_prompt() -> str:
-    '''读取 prompts/segmenter.ini 中的多行提示词，兼容包含换行的长文本。
-
-    支持以下写法：
-    - INI 多行值（在 prompt = 之后的行缩进即可视为同一值）
-        prompt =
-            第一行
-            第二行
-    - 三引号包裹（单行/多行均可，示例为双引号三引号）：
-        prompt = """
-        第一行
-        第二行
-        """
-      （也可使用单引号三引号，不在此处直接展示以避免文档转义冲突）
-    - 优先从 [prompt] 段读取键 prompt；若无则尝试 [segmenter] 与 [summarize]；
-    - 若仍未找到，则回退为将整个文件作为提示词原文。
-    '''
+    '''读取 prompts/segmenter.prompt 中的提示词。'''
     if not SEGMENTER_FILE.exists():
         raise FileNotFoundError(
             f"未找到 {SEGMENTER_FILE.as_posix()}，请先运行: python main.py init 或根据 README 创建提示文件"
         )
 
-    # 用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
-    parser = configparser.RawConfigParser()
     try:
-        parser.read(SEGMENTER_FILE, encoding="utf-8")
-    except Exception:
-        parser = None
-
-    prompt_text: str = ""
-
-    if parser:
-        section_candidates = ["prompt", "segmenter", "summarize"]
-        for section in section_candidates:
-            if parser.has_section(section) and parser.has_option(section, "prompt"):
-                prompt_text = parser.get(section, "prompt", raw=True, fallback="")
-                break
-    else:
-        # 回退：将整个文件视为提示词原文
         prompt_text = SEGMENTER_FILE.read_text(encoding="utf-8")
-
-    # 处理三引号包裹
-    stripped = prompt_text.strip()
-    if (stripped.startswith('"""') and stripped.endswith('"""')) or (
-        stripped.startswith("'''") and stripped.endswith("'''")
-    ):
-        prompt_text = stripped[3:-3]
+    except Exception as e:
+        raise ValueError(f"无法读取prompt文件: {e}")
 
     # 统一换行并去除最外层公共缩进
     prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
-    prompt_text = textwrap.dedent(prompt_text).strip("\n")
+    prompt_text = textwrap.dedent(prompt_text).strip()
 
     if not prompt_text:
         # 提供一个合理默认值（语义分割）
@@ -373,7 +319,7 @@ def load_prompt() -> str:
 
 
 def init_files(force: bool = False) -> None:
-    """生成示例 config.ini 与 prompt.ini。"""
+    """生成示例 config.ini 与 segmenter.prompt。"""
     sample_config = textwrap.dedent(
         """
         [gemini]
@@ -397,15 +343,12 @@ def init_files(force: bool = False) -> None:
 
     sample_prompt = textwrap.dedent(
         """
-        [prompt]
-        # 用于语义分割的提示词（支持多行，缩进行即可）：
-        prompt =
-            你是一个精准的中文语义分割助手。请将输入文本按语义主题划分为若干段落：
-            - 保障每一段内部主题一致，跨段主题尽量独立；
-            - 为每段生成短标题（不超过12字），并给出1-3句简要描述；
-            - 保留关键数据、时间、人物与因果；
-            - 输出 JSON 数组，每个元素包含 title、summary、text 字段；
-            - 不要附加其他说明。
+        你是一个精准的中文语义分割助手。请将输入文本按语义主题划分为若干段落：
+        - 保障每一段内部主题一致，跨段主题尽量独立；
+        - 为每段生成短标题（不超过12字），并给出1-3句简要描述；
+        - 保留关键数据、时间、人物与因果；
+        - 输出 JSON 数组，每个元素包含 title、summary、text 字段；
+        - 不要附加其他说明。
         """
     ).strip()
 

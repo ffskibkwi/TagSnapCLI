@@ -52,8 +52,18 @@ def format_tag_analysis_result(result: Dict[str, Any]) -> Text:
         
         parsed_result = analysis.get("result", {})
         
+        # 显示总体摘要
+        overall_summary = parsed_result.get("overall_summary", "")
+        if overall_summary:
+            output.append("📋 总体摘要:\n", style="bold blue")
+            output.append(overall_summary)
+            output.append("\n\n")
+        
+        # 获取标签详情
+        tagging_details = parsed_result.get("tagging_details", {})
+        
         # 显示匹配的标签
-        matched_tags = parsed_result.get("matched_tags", [])
+        matched_tags = tagging_details.get("matched_tags", [])
         if matched_tags:
             output.append("✅ 匹配的标签:\n", style="bold green")
             for tag in matched_tags:
@@ -62,18 +72,27 @@ def format_tag_analysis_result(result: Dict[str, Any]) -> Text:
             output.append("❌ 未找到匹配的标签\n", style="yellow")
         
         # 显示补充标签
-        supplementary_tags = parsed_result.get("supplementary_tags", [])
+        supplementary_tags = tagging_details.get("supplementary_tags", [])
         if supplementary_tags:
             output.append("\n✨ 补充标签:\n", style="bold magenta")
             for tag in supplementary_tags:
                 output.append(f"  • {tag}\n")
         
         # 显示分析说明
-        notes = parsed_result.get("tagging_notes", "")
+        notes = tagging_details.get("tagging_notes", "")
         if notes:
             output.append("\n📝 分析说明:\n", style="bold cyan")
             output.append(notes)
             output.append("\n")
+        
+        # 显示分段摘要
+        segmented_summaries = parsed_result.get("segmented_summaries", [])
+        if segmented_summaries:
+            output.append("\n📑 分段摘要:\n", style="bold yellow")
+            for i, segment in enumerate(segmented_summaries, 1):
+                segment_summary = segment.get("segment_summary", "")
+                if segment_summary:
+                    output.append(f"  {i}. {segment_summary}\n")
         
         # 如果有JSON解析错误，显示原始输出
         if "解析失败" in notes:
@@ -200,13 +219,12 @@ def interactive_loop(
         console.print(Panel(result_panel_text, title="🏷️ 标签分析结果", box=ROUNDED, border_style="green"))
 
 
-def display_tag_analysis_table(matched_tags: list, supplementary_tags: list, similar_tags: list) -> Table:
+def display_tag_analysis_table(analysis_result: Dict[str, Any], similar_tags: list) -> Table:
     """
     创建一个表格显示所有标签信息。
     
     Args:
-        matched_tags (list): 匹配的标签
-        supplementary_tags (list): 补充标签
+        analysis_result (Dict[str, Any]): 分析结果
         similar_tags (list): 相似标签
         
     Returns:
@@ -217,6 +235,12 @@ def display_tag_analysis_table(matched_tags: list, supplementary_tags: list, sim
     table.add_column("类型", style="cyan", no_wrap=True)
     table.add_column("数量", style="magenta")
     table.add_column("标签列表", style="green")
+    
+    # 从新的数据结构中提取标签
+    result = analysis_result.get("result", {})
+    tagging_details = result.get("tagging_details", {})
+    matched_tags = tagging_details.get("matched_tags", [])
+    supplementary_tags = tagging_details.get("supplementary_tags", [])
     
     table.add_row(
         "相似标签",

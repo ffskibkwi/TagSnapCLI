@@ -71,9 +71,8 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
     Returns:
         Dict[str, Any]: 包含分析结果和token使用信息的字典
     """
-    # 构建符合tag.ini prompt要求的输入格式
+    # 构建符合tag_seg.ini prompt要求的输入格式
     input_data = {
-        "text_id": "user_input",
         "document_content": text,
         "candidate_tags": candidate_tags
     }
@@ -121,9 +120,13 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
     except json.JSONDecodeError as e:
         # 如果JSON解析失败，返回原始文本
         parsed_result = {
-            "matched_tags": [],
-            "supplementary_tags": [],
-            "tagging_notes": f"JSON解析失败: {str(e)}\n原始输出: {output}"
+            "overall_summary": f"JSON解析失败: {str(e)}",
+            "tagging_details": {
+                "matched_tags": [],
+                "supplementary_tags": [],
+                "tagging_notes": f"JSON解析失败: {str(e)}\n原始输出: {output}"
+            },
+            "segmented_summaries": []
         }
 
     usage_meta = getattr(response, "usage_metadata", None)
@@ -157,8 +160,9 @@ def extract_all_tags(analysis_result: Dict[str, Any]) -> List[str]:
         List[str]: 所有标签的列表
     """
     result = analysis_result.get("result", {})
-    matched_tags = result.get("matched_tags", [])
-    supplementary_tags = result.get("supplementary_tags", [])
+    tagging_details = result.get("tagging_details", {})
+    matched_tags = tagging_details.get("matched_tags", [])
+    supplementary_tags = tagging_details.get("supplementary_tags", [])
     
     all_tags = []
     if isinstance(matched_tags, list):

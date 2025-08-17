@@ -2,7 +2,7 @@ import typer
 
 from config import (
     init_files, load_config, load_prompt, setup_proxy,
-    init_vector_database, get_similar_tags, load_tag_prompt, update_vector_database
+    init_vector_database, get_similar_tags, load_tag_seg_prompt, update_vector_database
 )
 from analysis import build_model, segment_text, analyze_text_with_tags, extract_all_tags
 from interface import interactive_loop
@@ -41,12 +41,12 @@ def init(force: bool = typer.Option(False, "--force", help="如存在则覆盖�
     else:
         print("✗ 缺少 init_tag_lab.json 词库文件")
     
-    # 检查tag.ini
-    tag_file = Path.cwd() / "prompts" / "tag.ini"
-    if tag_file.exists():
-        print("✓ prompts/tag.ini 存在")
+    # 检查tag_seg.ini
+    tag_seg_file = Path.cwd() / "prompts" / "tag_seg.ini"
+    if tag_seg_file.exists():
+        print("✓ prompts/tag_seg.ini 存在")
     else:
-        print("✗ 缺少 prompts/tag.ini 文件")
+        print("✗ 缺少 prompts/tag_seg.ini 文件")
 
 
 @app.command()
@@ -65,7 +65,7 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
     
     # 加载标签分析的prompt
     try:
-        tag_prompt = load_tag_prompt()
+        tag_prompt = load_tag_seg_prompt()
     except Exception as e:
         print(f"加载标签prompt失败: {e}")
         raise typer.Exit(1)
@@ -92,7 +92,7 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
             
             # 步骤3: 提取所有标签并更新向量数据库
             all_tags = extract_all_tags(analysis_result)
-            supplementary_tags = analysis_result.get("result", {}).get("supplementary_tags", [])
+            supplementary_tags = analysis_result.get("result", {}).get("tagging_details", {}).get("supplementary_tags", [])
             
             if supplementary_tags:
                 print(f"正在更新向量数据库，添加 {len(supplementary_tags)} 个新标签...")

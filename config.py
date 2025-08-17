@@ -28,6 +28,7 @@ CONFIG_FILE = Path.cwd() / "config.ini"
 PROMPTS_DIR = Path.cwd() / "prompts"
 SEGMENTER_FILE = PROMPTS_DIR / "segmenter.ini"
 TAG_FILE = PROMPTS_DIR / "tag.ini"
+TAG_SEG_FILE = PROMPTS_DIR / "tag_seg.ini"
 VOCAB_FILE = Path.cwd() / "init_tag_lab.json"
 DB_PATH = Path.cwd() / "chroma_db_cosine"
 COLLECTION_NAME = "tag_embeddings_cosine"
@@ -269,6 +270,39 @@ def load_tag_prompt() -> str:
     
     if not prompt_text:
         raise ValueError(f"{TAG_FILE} 中的提示词内容为空")
+    
+    return prompt_text
+
+
+def load_tag_seg_prompt() -> str:
+    """
+    从 prompts/tag_seg.ini 中加载标签分析的提示词。
+    """
+    if not TAG_SEG_FILE.exists():
+        raise FileNotFoundError(
+            f"未找到 {TAG_SEG_FILE.as_posix()}，请确保文件存在"
+        )
+    
+    # 使用 RawConfigParser 保持原始字符串（不做 % 插值），以更好地兼容长文本
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(TAG_SEG_FILE, encoding="utf-8")
+    except Exception as e:
+        raise ValueError(f"无法读取配置文件: {e}")
+    
+    prompt_text: str = ""
+    
+    if parser.has_section("tag") and parser.has_option("tag", "prompt"):
+        prompt_text = parser.get("tag", "prompt", raw=True, fallback="")
+    else:
+        raise ValueError("未找到 [tag] 段落或 prompt 配置项")
+    
+    # 统一换行并去除最外层公共缩进
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    prompt_text = textwrap.dedent(prompt_text).strip("\n")
+    
+    if not prompt_text:
+        raise ValueError(f"{TAG_SEG_FILE} 中的提示词内容为空")
     
     return prompt_text
 

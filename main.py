@@ -2,9 +2,10 @@ import typer
 
 from config import (
     init_files, load_config, load_prompt, setup_proxy,
-    init_vector_database, get_similar_tags, load_tag_seg_prompt, update_vector_database
+    init_vector_database, get_similar_tags, load_tag_seg_prompt, update_vector_database,
+    load_tag_add_check_prompt
 )
-from analysis import build_model, segment_text, analyze_text_with_tags, extract_all_tags
+from analysis import build_model, segment_text, analyze_text_with_tags, extract_all_tags, adjudicate_supplementary_tags
 from interface import interactive_loop
 
 
@@ -48,6 +49,13 @@ def init(force: bool = typer.Option(False, "--force", help="如存在则覆盖�
     else:
         print("✗ 缺少 prompts/tag_seg.prompt 文件")
 
+    # 检查tag_add_check.prompt
+    tag_add_check_file = Path.cwd() / "prompts" / "tag_add_check.prompt"
+    if tag_add_check_file.exists():
+        print("✓ prompts/tag_add_check.prompt 存在")
+    else:
+        print("✗ 缺少 prompts/tag_add_check.prompt 文件")
+
 
 @app.command()
 def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
@@ -72,6 +80,14 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
     
     # 构建使用标签prompt的模型
     model = build_model(cfg["api_key"], cfg["model"], tag_prompt)
+
+    # 构建用于新增标签判重的模型
+    try:
+        tag_add_check_prompt = load_tag_add_check_prompt()
+        judge_model = build_model(cfg["api_key"], cfg["model"], tag_add_check_prompt)
+    except Exception as e:
+        print(f"加载判重prompt失败: {e}")
+        judge_model = None
     print("\n系统已就绪，开始标签分析模式...")
 
     def on_submit(text: str):
@@ -90,13 +106,84 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
             print("正在进行标签分析...")
             analysis_result = analyze_text_with_tags(model, text, similar_tags, temperature=temperature)
             
-            # 步骤3: 提取所有标签并更新向量数据库
-            all_tags = extract_all_tags(analysis_result)
-            supplementary_tags = analysis_result.get("result", {}).get("tagging_details", {}).get("supplementary_tags", [])
-            
-            if supplementary_tags:
-                print(f"正在更新向量数据库，添加 {len(supplementary_tags)} 个新标签...")
-                update_vector_database(collection, supplementary_tags)
+            # 步骤3: 提取并判重补充标签，必要时更新向量数据库
+            result_obj = analysis_result.get("result", {}) or {}
+            tagging_details = result_obj.get("tagging_details", {}) or {}
+            matched_tags = list(tagging_details.get("matched_tags", []) or [])
+            supplementary_tags = list(tagging_details.get("supplementary_tags", []) or [])
+
+            # 针对每个补充标签，先用 bge-m3 做一次相似检索
+            items_for_llm = []
+            moved_to_matched = set()
+            supp_tag_to_similars = {}
+            for supp in supplementary_tags:
+                try:
+                    existing_similars = get_similar_tags(supp, collection, n_results=8)
+                except Exception:
+                    existing_similars = []
+                supp_tag_to_similars[supp] = existing_similars
+                # 特殊情况：相似集中存在与补充标签同名项 → 直接视为已存在，加入 matched
+                if any(s.strip() == supp.strip() for s in (existing_similars or [])):
+                    moved_to_matched.add(supp)
+                else:
+                    items_for_llm.append({
+                        "supplementary_tag": supp,
+                        "existing_similar_tags": existing_similars or []
+                    })
+
+            # 去重更新 matched_tags
+            if moved_to_matched:
+                matched_set = set(matched_tags)
+                matched_set.update(moved_to_matched)
+                matched_tags = list(matched_set)
+
+            accepted_new_tags = []
+
+            # 若可用，调用判重 LLM，对剩余补充标签进行裁决
+            if judge_model is not None and items_for_llm:
+                print("正在进行新增标签判重…")
+                try:
+                    judge_res = adjudicate_supplementary_tags(
+                        judge_model,
+                        document_content=text,
+                        matched_tags=matched_tags,
+                        items=items_for_llm,
+                        temperature=0.0,
+                    )
+                    judgements = judge_res.get("judgements", [])
+                except Exception as e:
+                    print(f"判重失败，跳过本次新增：{e}")
+                    judgements = []
+
+                # 处理裁决结果
+                for j in judgements:
+                    judged_tag = j.get("judged_tag")
+                    decision = j.get("decision")
+                    final_tag = j.get("final_tag")
+                    if not judged_tag or not final_tag:
+                        continue
+                    if decision == "ACCEPT_NEW" and final_tag.strip() == judged_tag.strip():
+                        accepted_new_tags.append(judged_tag)
+                    else:
+                        # 视为重定向到已有标签，同步到 matched
+                        if final_tag:
+                            if final_tag not in matched_tags:
+                                matched_tags.append(final_tag)
+
+            # 根据移动与裁决结果，刷新补充标签与匹配标签集合
+            final_matched = sorted(set(matched_tags))
+            # 保留仅被接受为新增的补充标签
+            final_supplementary = sorted(set(accepted_new_tags))
+
+            # 写回到 analysis_result，用于 UI 展示
+            analysis_result.setdefault("result", {}).setdefault("tagging_details", {})
+            analysis_result["result"]["tagging_details"]["matched_tags"] = final_matched
+            analysis_result["result"]["tagging_details"]["supplementary_tags"] = final_supplementary
+
+            # 仅将被接受的新增补充标签写入向量库
+            if final_supplementary:
+                print(f"正在更新向量数据库，添加 {len(final_supplementary)} 个新标签...")
+                update_vector_database(collection, final_supplementary)
             
             return {
                 "analysis_result": analysis_result,

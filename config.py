@@ -29,6 +29,7 @@ PROMPTS_DIR = Path.cwd() / "prompts"
 SEGMENTER_FILE = PROMPTS_DIR / "segmenter.prompt"
 TAG_FILE = PROMPTS_DIR / "tag.prompt"
 TAG_SEG_FILE = PROMPTS_DIR / "tag_seg.prompt"
+TAG_ADD_CHECK_FILE = PROMPTS_DIR / "tag_add_check.prompt"
 VOCAB_FILE = Path.cwd() / "init_tag_lab.json"
 DB_PATH = Path.cwd() / "chroma_db_cosine"
 COLLECTION_NAME = "tag_embeddings_cosine"
@@ -285,6 +286,30 @@ def load_tag_seg_prompt() -> str:
     
     if not prompt_text:
         raise ValueError(f"{TAG_SEG_FILE} 中的提示词内容为空")
+    
+    return prompt_text
+
+
+def load_tag_add_check_prompt() -> str:
+    """
+    从 prompts/tag_add_check.prompt 中加载新增标签判重的提示词。
+    """
+    if not TAG_ADD_CHECK_FILE.exists():
+        raise FileNotFoundError(
+            f"未找到 {TAG_ADD_CHECK_FILE.as_posix()}，请确保文件存在"
+        )
+    
+    try:
+        prompt_text = TAG_ADD_CHECK_FILE.read_text(encoding="utf-8")
+    except Exception as e:
+        raise ValueError(f"无法读取prompt文件: {e}")
+    
+    # 统一换行并去除最外层公共缩进
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    prompt_text = textwrap.dedent(prompt_text).strip()
+    
+    if not prompt_text:
+        raise ValueError(f"{TAG_ADD_CHECK_FILE} 中的提示词内容为空")
     
     return prompt_text
 

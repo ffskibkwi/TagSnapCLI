@@ -191,3 +191,93 @@ def extract_all_tags(analysis_result: Dict[str, Any]) -> List[str]:
     return all_tags
 
 
+
+def adjudicate_supplementary_tags(
+    model,
+    document_content: str,
+    matched_tags: List[str],
+    items: List[Dict[str, Any]],
+    temperature: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    使用判重提示词，对补充标签进行逐一裁决。
+
+    Args:
+        model: Gemini 模型实例（其 system_instruction 必须为 tag_add_check.prompt 内容）
+        document_content (str): 原始文档内容
+        matched_tags (List[str]): 先前确认的匹配标签
+        items (List[Dict[str, Any]]): 每项形如 {"supplementary_tag": str, "existing_similar_tags": List[str]}
+        temperature (float): 生成温度，默认 0.0（更一致）
+
+    Returns:
+        Dict[str, Any]: { "judgements": List[Dict], "raw_output": str, "usage": Optional[Dict] }
+    """
+    input_payload = {
+        "document_content": document_content,
+        "matched_tags": matched_tags,
+        "supplementary_tags": items,
+    }
+
+    json_input = json.dumps(input_payload, ensure_ascii=False, indent=2)
+
+    # 1. 本地计算输入文本的 token
+    input_tokens = model.count_tokens(json_input).total_tokens
+
+    response = model.generate_content(
+        json_input,
+        generation_config={
+            "temperature": max(0.0, min(1.0, float(temperature))),
+        },
+    )
+
+    output: Optional[str] = getattr(response, "text", None)
+    if not output:
+        try:
+            candidates = response.candidates or []
+            if candidates and candidates[0].content and candidates[0].content.parts:
+                output = "".join(
+                    part.text for part in candidates[0].content.parts if hasattr(part, "text")
+                )
+        except Exception:
+            output = None
+
+    if not output:
+        raise RuntimeError("未从模型获取到有效输出")
+
+    # 解析为 JSON 数组
+    judgements: List[Dict[str, Any]]
+    try:
+        output_clean = output.strip()
+        start_idx = output_clean.find('[')
+        end_idx = output_clean.rfind(']') + 1
+        if start_idx != -1 and end_idx > start_idx:
+            json_str = output_clean[start_idx:end_idx]
+            judgements = json.loads(json_str)
+        else:
+            judgements = json.loads(output_clean)
+        if not isinstance(judgements, list):
+            raise ValueError("判重输出不是 JSON 数组")
+    except Exception as e:
+        # 失败则以空数组返回，但保留原始输出供上层诊断
+        judgements = []
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = None
+    if usage_meta is not None:
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        usage = {
+            "input": input_tokens,
+            "prompt": system_prompt_tokens,
+            "output": completion_tokens,
+            "total": total_tokens,
+        }
+
+    return {
+        "judgements": judgements,
+        "raw_output": (output or "").strip(),
+        "usage": usage,
+    }
+

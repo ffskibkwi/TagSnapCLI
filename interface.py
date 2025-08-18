@@ -127,7 +127,7 @@ def interactive_loop(
     console.print(
         Panel(
             "欢迎使用 TagSnapCLI 标签分析助手\n"
-            "- Enter 换行，Ctrl+J 或 Ctrl+S 提交\n"
+            "- Enter 换行，Ctrl+Enter 提交\n"
             "- Ctrl+P 从剪贴板粘贴并提交\n"
             "- Ctrl+Q 或输入 \\q 退出",
             title="TagSnapCLI - AI 标签分析",
@@ -148,12 +148,8 @@ def interactive_loop(
 
             kb = KeyBindings()
 
-            # 使用 Ctrl+J 或 Ctrl+S 提交，保留 Enter 作为换行
-            @kb.add("c-j")
-            def _(event):
-                event.app.exit(result=textarea.text)
-
-            @kb.add("c-s")
+            # 使用 Ctrl+Enter 提交，保留 Enter 作为换行
+            @kb.add("c-m")
             def _(event):
                 event.app.exit(result=textarea.text)
 

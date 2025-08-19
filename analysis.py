@@ -19,10 +19,15 @@ def build_model(api_key: str, model_name: str, system_instruction: str):
     return model
 
 
-def segment_text(model, text: str, temperature: float = 0.3) -> Dict[str, Any]:
+def segment_text(model, text: str, temperature: float = 0.3, debug: bool = False) -> Dict[str, Any]:
     """调用 Gemini 对文本进行语义分割，返回结果与 token 用量信息。"""
     # 1. 本地计算输入文本的 token
     input_tokens = model.count_tokens(text).total_tokens
+
+    if debug:
+        print("[DEBUG] segment_text 输入文本:")
+        print(text)
+        print(f"[DEBUG] segment_text temperature={temperature}")
 
     response = model.generate_content(
         text,
@@ -44,6 +49,10 @@ def segment_text(model, text: str, temperature: float = 0.3) -> Dict[str, Any]:
 
     if not output:
         raise RuntimeError("未从模型获取到有效输出")
+
+    if debug:
+        print("[DEBUG] segment_text 原始输出:")
+        print(output.strip())
 
     usage_meta = getattr(response, "usage_metadata", None)
     usage = None
@@ -67,7 +76,7 @@ def segment_text(model, text: str, temperature: float = 0.3) -> Dict[str, Any]:
     return {"text": output.strip(), "usage": usage}
 
 
-def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperature: float = 0.3) -> Dict[str, Any]:
+def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperature: float = 0.3, debug: bool = False) -> Dict[str, Any]:
     """
     使用标签分析文本，返回匹配的标签和补充标签。
     
@@ -88,6 +97,11 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
     
     # 将输入数据转换为JSON字符串，作为用户输入传递给模型
     json_input = json.dumps(input_data, ensure_ascii=False, indent=2)
+
+    if debug:
+        print("[DEBUG] analyze_text_with_tags 请求入参(JSON):")
+        print(json_input)
+        print(f"[DEBUG] analyze_text_with_tags temperature={temperature}")
 
     # 1. 本地计算输入文本的 token
     input_tokens = model.count_tokens(json_input).total_tokens
@@ -140,6 +154,10 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
             },
             "segmented_summaries": []
         }
+
+    if debug:
+        print("[DEBUG] analyze_text_with_tags 原始输出:")
+        print(output.strip())
 
     usage_meta = getattr(response, "usage_metadata", None)
     usage = None
@@ -198,6 +216,7 @@ def adjudicate_supplementary_tags(
     matched_tags: List[str],
     items: List[Dict[str, Any]],
     temperature: float = 0.0,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """
     使用判重提示词，对补充标签进行逐一裁决。
@@ -219,6 +238,11 @@ def adjudicate_supplementary_tags(
     }
 
     json_input = json.dumps(input_payload, ensure_ascii=False, indent=2)
+
+    if debug:
+        print("[DEBUG] adjudicate_supplementary_tags 请求入参(JSON):")
+        print(json_input)
+        print(f"[DEBUG] adjudicate_supplementary_tags temperature={temperature}")
 
     # 1. 本地计算输入文本的 token
     input_tokens = model.count_tokens(json_input).total_tokens
@@ -260,6 +284,10 @@ def adjudicate_supplementary_tags(
     except Exception as e:
         # 失败则以空数组返回，但保留原始输出供上层诊断
         judgements = []
+
+    if debug:
+        print("[DEBUG] adjudicate_supplementary_tags 原始输出:")
+        print((output or "").strip())
 
     usage_meta = getattr(response, "usage_metadata", None)
     usage = None

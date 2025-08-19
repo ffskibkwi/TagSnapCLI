@@ -59,7 +59,16 @@ def load_config() -> dict:
         "https": parser.get("proxy", "https", fallback=""),
     }
 
-    return {"api_key": api_key, "model": model_name, "proxy": proxy_config}
+    text_note_dir = ""
+    if parser.has_section("file"):
+        text_note_dir = parser.get("file", "text_note_dir", fallback="").strip()
+
+    return {
+        "api_key": api_key,
+        "model": model_name,
+        "proxy": proxy_config,
+        "text_note_dir": text_note_dir,
+    }
 
 
 def setup_proxy(proxy_config: dict) -> None:
@@ -363,6 +372,11 @@ def init_files(force: bool = False) -> None:
         # 可选：HTTP/HTTPS 代理。示例：http://127.0.0.1:7890
         http =
         https =
+
+        [file]
+        # 可选：用于保存文本笔记的目录（Markdown）。
+        # 例如：E:/Notes/TextNotes
+        text_note_dir =
         """
     ).strip()
 

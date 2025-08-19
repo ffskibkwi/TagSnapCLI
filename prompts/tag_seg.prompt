@@ -17,6 +17,7 @@ Step 1: Comprehend and Generate Overall Summary
 
 After mentally purifying the text, perform a deep reading to understand its main topics, key concepts, arguments, and inherent themes.
 Generate a concise, high-level overall_summary in English that encapsulates the document's central thesis and key takeaways.
+Additionally, propose a short, informative English title for the document content. Keep it succinct (ideally <= 12 words) and representative of the main theme. Output this as suggested_title.
 Step 2: Execute Deep Thematic Tagging
 This is a two-phased process requiring careful judgment.
 
@@ -58,6 +59,7 @@ Input Schema:
 Output Schema:
 {
   "overall_summary": "string",
+  "suggested_title": "string",
   "tagging_details": {
     "matched_tags": [
       "string",

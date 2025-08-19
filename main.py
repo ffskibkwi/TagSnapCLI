@@ -1,4 +1,8 @@
 import typer
+import re
+import hashlib
+from datetime import datetime
+from pathlib import Path
 
 from config import (
     init_files, load_config, load_prompt, setup_proxy,
@@ -58,7 +62,10 @@ def init(force: bool = typer.Option(False, "--force", help="如存在则覆盖�
 
 
 @app.command()
-def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
+def run(
+    temperature: float = typer.Option(0.3, help="生成温度(0-1)"),
+    debug: bool = typer.Option(False, "--debug", help="输出与LLM交互的详细日志")
+):
     """启动常驻交互式界面，持续接收文本并输出标签分析结果。"""
     cfg = load_config()
     setup_proxy(cfg["proxy"])  # 设置环境代理
@@ -88,10 +95,39 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
     except Exception as e:
         print(f"加载判重prompt失败: {e}")
         judge_model = None
+    # 可选调试提示
+    try:
+        # 如果存在 debug 变量（由 run 的参数注入作用域）且为 True，输出提示
+        if 'debug' in locals() and debug and judge_model is None:
+            print("[DEBUG] 判重模型未就绪，将跳过 LLM 判重，仅执行向量近邻检查。")
+    except Exception:
+        pass
     print("\n系统已就绪，开始标签分析模式...")
 
     def on_submit(text: str):
         try:
+            # 预处理：从原始文本提取一级标题与来源链接
+            def extract_title_and_source(raw_text: str):
+                title_val = None
+                source_val = None
+                for line in raw_text.splitlines():
+                    # 一级标题：以单个 # 开头，且不是 ##/###。允许前导空白。
+                    m_title = re.match(r"^\s*#(?!#)\s+(.+)$", line)
+                    if m_title and not title_val:
+                        title_val = m_title.group(1).strip()
+                    # 来源：以 source: 开头（大小写不敏感），允许前导空白
+                    m_src = re.match(r"^\s*source:\s*(.+)$", line, flags=re.IGNORECASE)
+                    if m_src and not source_val:
+                        source_val = m_src.group(1).strip()
+                    if title_val and source_val:
+                        break
+                return title_val, source_val
+
+            title_extracted, source_url = extract_title_and_source(text)
+            if debug:
+                print("[DEBUG] 提取到的标题:", title_extracted)
+                print("[DEBUG] 提取到的来源URL:", source_url)
+
             # 步骤1: 获取与文本最相似的10个标签
             print("正在检索相似标签...")
             similar_tags = get_similar_tags(text, collection, n_results=10)
@@ -104,15 +140,36 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
             
             # 步骤2: 使用Gemini进行标签分析
             print("正在进行标签分析...")
-            analysis_result = analyze_text_with_tags(model, text, similar_tags, temperature=temperature)
+            if debug:
+                print("[DEBUG] 相似标签用于候选:", similar_tags)
+            analysis_result = analyze_text_with_tags(
+                model, text, similar_tags, temperature=temperature, debug=debug
+            )
+            if debug:
+                usage_a = analysis_result.get("usage") or {}
+                if usage_a:
+                    print(
+                        f"[DEBUG] 分析 tokens: input={usage_a.get('input', 0)} prompt={usage_a.get('prompt', 0)} "
+                        f"output={usage_a.get('output', 0)} total={usage_a.get('total', 0)}"
+                    )
             
             # 步骤3: 提取并判重补充标签，必要时更新向量数据库
             result_obj = analysis_result.get("result", {}) or {}
+            # 若未从原文提取到 title，则尝试使用 LLM 的备选标题
+            if not title_extracted:
+                suggested_title = (result_obj or {}).get("suggested_title")
+                if isinstance(suggested_title, str) and suggested_title.strip():
+                    title_extracted = suggested_title.strip()
+                    if debug:
+                        print("[DEBUG] 使用 LLM 备选标题:", title_extracted)
             tagging_details = result_obj.get("tagging_details", {}) or {}
             matched_tags = list(tagging_details.get("matched_tags", []) or [])
             supplementary_tags = list(tagging_details.get("supplementary_tags", []) or [])
 
             # 针对每个补充标签，先用 bge-m3 做一次相似检索
+            if debug:
+                print("[DEBUG] 初始 matched_tags:", matched_tags)
+                print("[DEBUG] 初始 supplementary_tags:", supplementary_tags)
             items_for_llm = []
             moved_to_matched = set()
             supp_tag_to_similars = {}
@@ -122,6 +179,8 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
                 except Exception:
                     existing_similars = []
                 supp_tag_to_similars[supp] = existing_similars
+                if debug:
+                    print(f"[DEBUG] 补充标签 '{supp}' 的近邻相似标签:", existing_similars)
                 # 特殊情况：相似集中存在与补充标签同名项 → 直接视为已存在，加入 matched
                 if any(s.strip() == supp.strip() for s in (existing_similars or [])):
                     moved_to_matched.add(supp)
@@ -136,6 +195,8 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
                 matched_set = set(matched_tags)
                 matched_set.update(moved_to_matched)
                 matched_tags = list(matched_set)
+                if debug:
+                    print("[DEBUG] 因近邻重名而直接加入 matched 的标签:", sorted(moved_to_matched))
 
             accepted_new_tags = []
 
@@ -149,8 +210,16 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
                         matched_tags=matched_tags,
                         items=items_for_llm,
                         temperature=0.0,
+                        debug=debug,
                     )
                     judgements = judge_res.get("judgements", [])
+                    if debug:
+                        usage_j = judge_res.get("usage") or {}
+                        if usage_j:
+                            print(
+                                f"[DEBUG] 判重 tokens: input={usage_j.get('input', 0)} prompt={usage_j.get('prompt', 0)} "
+                                f"output={usage_j.get('output', 0)} total={usage_j.get('total', 0)}"
+                            )
                 except Exception as e:
                     print(f"判重失败，跳过本次新增：{e}")
                     judgements = []
@@ -162,6 +231,8 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
                     final_tag = j.get("final_tag")
                     if not judged_tag or not final_tag:
                         continue
+                    if debug:
+                        print("[DEBUG] 判重结果项:", j)
                     if decision == "ACCEPT_NEW" and final_tag.strip() == judged_tag.strip():
                         accepted_new_tags.append(judged_tag)
                     else:
@@ -180,10 +251,82 @@ def run(temperature: float = typer.Option(0.3, help="生成温度(0-1)")):
             analysis_result["result"]["tagging_details"]["matched_tags"] = final_matched
             analysis_result["result"]["tagging_details"]["supplementary_tags"] = final_supplementary
 
+            if debug:
+                print("[DEBUG] 最终 matched_tags:", final_matched)
+                print("[DEBUG] 最终 supplementary_tags:", final_supplementary)
+
             # 仅将被接受的新增补充标签写入向量库
             if final_supplementary:
                 print(f"正在更新向量数据库，添加 {len(final_supplementary)} 个新标签...")
+                if debug:
+                    print("[DEBUG] 即将写入向量库的标签:", final_supplementary)
                 update_vector_database(collection, final_supplementary)
+
+            # 步骤4: 保存 Markdown 文件（在复核后，使用最终标签集合）
+            try:
+                note_dir = (cfg.get("text_note_dir") or "").strip()
+                if note_dir and title_extracted:
+                    # 生成唯一 id：YYYYMMDD + '_' + sha256(title + 第一个segment_summary) 的后8位（大写）
+                    # 获取分段摘要，并取第一个段落的 summary 作为参与哈希的内容
+                    seg_summaries = (result_obj.get("segmented_summaries") or [])
+                    first_seg_sum = ""
+                    if isinstance(seg_summaries, list) and seg_summaries:
+                        first_item = seg_summaries[0] or {}
+                        maybe_sum = first_item.get("segment_summary")
+                        if isinstance(maybe_sum, str):
+                            first_seg_sum = maybe_sum
+                    date_str = datetime.now().strftime("%Y%m%d")
+                    concat_text = f"{title_extracted}{first_seg_sum}"
+                    tail = hashlib.sha256(concat_text.encode("utf-8")).hexdigest()[-8:].upper()
+                    uid = f"{date_str}_{tail}"
+
+                    # 汇总所有标签（空格分隔），并将标签内部空格替换为 '-'
+                    all_tags = sorted(set(final_matched + final_supplementary))
+                    processed_tags = []
+                    for _t in all_tags:
+                        if isinstance(_t, str):
+                            _norm = re.sub(r"\s+", "-", _t.strip())
+                            if _norm:
+                                processed_tags.append(_norm)
+                    tags_line = " ".join(processed_tags)
+
+                    # 组装正文：分段摘要
+                    body_lines = []
+                    for seg in seg_summaries:
+                        seg_sum = (seg or {}).get("segment_summary")
+                        if isinstance(seg_sum, str) and seg_sum.strip():
+                            body_lines.append(seg_sum.strip())
+
+                    # 构建 Markdown 文本
+                    front_matter = [
+                        "---",
+                        f"id: {uid}",
+                        f"tags: {tags_line}",
+                        f"url: {source_url or ''}",
+                        "---",
+                    ]
+                    md_text = "\n".join(front_matter + body_lines) + "\n"
+
+                    # 规范化文件名并保存
+                    def sanitize_filename(name: str) -> str:
+                        # 移除 Windows 不允许的字符
+                        name = re.sub(r"[\\\\/:*?\"<>|]", "", name)
+                        # 去掉首尾空格和点
+                        name = name.strip().strip('.')
+                        return name or uid
+
+                    file_name = sanitize_filename(title_extracted) + ".md"
+                    save_dir = Path(note_dir)
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    save_path = save_dir / file_name
+                    save_path.write_text(md_text, encoding="utf-8")
+                    if debug:
+                        print(f"[DEBUG] Markdown 已保存: {save_path}")
+                else:
+                    if debug:
+                        print("[DEBUG] 未保存 Markdown：text_note_dir 未配置或标题为空。")
+            except Exception as e:
+                print(f"保存 Markdown 失败: {e}")
             
             return {
                 "analysis_result": analysis_result,

@@ -280,7 +280,7 @@ def run(
                     tail = hashlib.sha256(concat_text.encode("utf-8")).hexdigest()[-8:].upper()
                     uid = f"{date_str}_{tail}"
 
-                    # 汇总所有标签（空格分隔），并将标签内部空格替换为 '-'
+                    # 汇总所有标签，并将标签内部空格替换为 '-'
                     all_tags = sorted(set(final_matched + final_supplementary))
                     processed_tags = []
                     for _t in all_tags:
@@ -288,23 +288,34 @@ def run(
                             _norm = re.sub(r"\s+", "-", _t.strip())
                             if _norm:
                                 processed_tags.append(_norm)
-                    tags_line = " ".join(processed_tags)
 
-                    # 组装正文：分段摘要
+                    # 组装正文：Summary 与分段摘要（带标题与项目符号）
+                    overall_summary = (result_obj.get("overall_summary") or "")
+                    if not isinstance(overall_summary, str):
+                        overall_summary = str(overall_summary)
                     body_lines = []
+                    body_lines.append("## Summary")
+                    body_lines.append(overall_summary.strip())
+                    body_lines.append("## Segment summaries")
                     for seg in seg_summaries:
                         seg_sum = (seg or {}).get("segment_summary")
                         if isinstance(seg_sum, str) and seg_sum.strip():
-                            body_lines.append(seg_sum.strip())
+                            body_lines.append(f" - {seg_sum.strip()}")
 
                     # 构建 Markdown 文本
                     front_matter = [
                         "---",
                         f"id: {uid}",
-                        f"tags: {tags_line}",
+                    ]
+                    if processed_tags:
+                        front_matter.append("tags:")
+                        front_matter.extend([f"  - {t}" for t in processed_tags])
+                    else:
+                        front_matter.append("tags: []")
+                    front_matter.extend([
                         f"url: {source_url or ''}",
                         "---",
-                    ]
+                    ])
                     md_text = "\n".join(front_matter + body_lines) + "\n"
 
                     # 规范化文件名并保存

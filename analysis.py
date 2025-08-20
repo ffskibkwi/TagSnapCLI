@@ -184,6 +184,307 @@ def analyze_text_with_tags(model, text: str, candidate_tags: List[str], temperat
     }
 
 
+def analyze_text_with_candidates(
+    model,
+    text: str,
+    candidate_types: List[str],
+    candidate_fields: List[str],
+    candidate_keywords: List[str],
+    temperature: float = 0.3,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """
+    基于新的 tag_seg.prompt（包含类型/领域/关键词）进行整体分析。
+    输入包含 candidate_types、candidate_fields、candidate_keywords。
+    """
+    input_data = {
+        "document_content": text,
+        "candidate_types": candidate_types,
+        "candidate_fields": candidate_fields,
+        "candidate_keywords": candidate_keywords,
+    }
+    json_input = json.dumps(input_data, ensure_ascii=False, indent=2)
+
+    if debug:
+        print("[DEBUG] analyze_text_with_candidates 请求入参(JSON):")
+        print(json_input)
+        print(f"[DEBUG] analyze_text_with_candidates temperature={temperature}")
+
+    input_tokens = model.count_tokens(json_input).total_tokens
+    response = model.generate_content(
+        json_input,
+        generation_config={
+            "temperature": max(0.0, min(1.0, float(temperature))),
+        },
+    )
+
+    output: Optional[str] = getattr(response, "text", None)
+    if not output:
+        try:
+            candidates = response.candidates or []
+            if candidates and candidates[0].content and candidates[0].content.parts:
+                output = "".join(
+                    part.text for part in candidates[0].content.parts if hasattr(part, "text")
+                )
+        except Exception:
+            output = None
+
+    if not output:
+        raise RuntimeError("未从模型获取到有效输出")
+
+    if debug:
+        print("[DEBUG] analyze_text_with_candidates 原始输出:")
+        print(output.strip())
+
+    try:
+        output_clean = output.strip()
+        start_idx = output_clean.find('{')
+        end_idx = output_clean.rfind('}') + 1
+        if start_idx != -1 and end_idx > start_idx:
+            json_str = output_clean[start_idx:end_idx]
+            parsed_result = json.loads(json_str)
+        else:
+            parsed_result = json.loads(output_clean)
+    except json.JSONDecodeError as e:
+        parsed_result = {
+            "overall_summary": f"JSON解析失败: {str(e)}",
+            "extraction_notes": f"JSON解析失败: {str(e)}\n原始输出: {output}",
+            "matched_types": [],
+            "supplementary_types": [],
+            "matched_fields": [],
+            "supplementary_fields": [],
+            "matched_keywords": [],
+            "supplementary_keywords": [],
+            "segmented_summaries": [],
+        }
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = None
+    if usage_meta is not None:
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        usage = {
+            "input": input_tokens,
+            "prompt": system_prompt_tokens,
+            "output": completion_tokens,
+            "total": total_tokens,
+        }
+
+    return {
+        "result": parsed_result,
+        "raw_output": output.strip(),
+        "usage": usage,
+    }
+
+
+def adjudicate_keywords(
+    model,
+    document_content: str,
+    matched_keywords: List[str],
+    items: List[Dict[str, Any]],
+    temperature: float = 0.0,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """
+    使用 tag_add_check.prompt 对补充关键词进行裁决。
+    items: [{"supplementary_keyword": str, "existing_similar_keywords": List[str]}]
+    """
+    input_payload = {
+        "document_content": document_content,
+        "matched_keywords": matched_keywords,
+        "supplementary_keywords": items,
+    }
+    json_input = json.dumps(input_payload, ensure_ascii=False, indent=2)
+    if debug:
+        print("[DEBUG] adjudicate_keywords 请求入参(JSON):")
+        print(json_input)
+        print(f"[DEBUG] adjudicate_keywords temperature={temperature}")
+
+    input_tokens = model.count_tokens(json_input).total_tokens
+    response = model.generate_content(
+        json_input,
+        generation_config={"temperature": max(0.0, min(1.0, float(temperature)))},
+    )
+    output: Optional[str] = getattr(response, "text", None)
+    if not output:
+        try:
+            candidates = response.candidates or []
+            if candidates and candidates[0].content and candidates[0].content.parts:
+                output = "".join(part.text for part in candidates[0].content.parts if hasattr(part, "text"))
+        except Exception:
+            output = None
+    if not output:
+        raise RuntimeError("未从模型获取到有效输出")
+    if debug:
+        print("[DEBUG] adjudicate_keywords 原始输出:")
+        print((output or "").strip())
+
+    try:
+        output_clean = output.strip()
+        start_idx = output_clean.find('[')
+        end_idx = output_clean.rfind(']') + 1
+        if start_idx != -1 and end_idx > start_idx:
+            json_str = output_clean[start_idx:end_idx]
+            judgements = json.loads(json_str)
+        else:
+            judgements = json.loads(output_clean)
+        if not isinstance(judgements, list):
+            raise ValueError("判重输出不是 JSON 数组")
+    except Exception:
+        judgements = []
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = None
+    if usage_meta is not None:
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        usage = {"input": input_tokens, "prompt": system_prompt_tokens, "output": completion_tokens, "total": total_tokens}
+
+    return {"judgements": judgements, "raw_output": (output or "").strip(), "usage": usage}
+
+
+def adjudicate_fields(
+    model,
+    document_content: str,
+    matched_fields: List[str],
+    items: List[Dict[str, Any]],
+    temperature: float = 0.0,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """
+    使用 field_add_check.prompt 对补充领域进行裁决。
+    items: [{"supplementary_field": str, "existing_similar_fields": List[str]}]
+    """
+    input_payload = {
+        "document_content": document_content,
+        "matched_fields": matched_fields,
+        "supplementary_fields": items,
+    }
+    json_input = json.dumps(input_payload, ensure_ascii=False, indent=2)
+    if debug:
+        print("[DEBUG] adjudicate_fields 请求入参(JSON):")
+        print(json_input)
+        print(f"[DEBUG] adjudicate_fields temperature={temperature}")
+
+    input_tokens = model.count_tokens(json_input).total_tokens
+    response = model.generate_content(
+        json_input,
+        generation_config={"temperature": max(0.0, min(1.0, float(temperature)))},
+    )
+    output: Optional[str] = getattr(response, "text", None)
+    if not output:
+        try:
+            candidates = response.candidates or []
+            if candidates and candidates[0].content and candidates[0].content.parts:
+                output = "".join(part.text for part in candidates[0].content.parts if hasattr(part, "text"))
+        except Exception:
+            output = None
+    if not output:
+        raise RuntimeError("未从模型获取到有效输出")
+    if debug:
+        print("[DEBUG] adjudicate_fields 原始输出:")
+        print((output or "").strip())
+
+    try:
+        output_clean = output.strip()
+        start_idx = output_clean.find('[')
+        end_idx = output_clean.rfind(']') + 1
+        if start_idx != -1 and end_idx > start_idx:
+            json_str = output_clean[start_idx:end_idx]
+            judgements = json.loads(json_str)
+        else:
+            judgements = json.loads(output_clean)
+        if not isinstance(judgements, list):
+            raise ValueError("判重输出不是 JSON 数组")
+    except Exception:
+        judgements = []
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = None
+    if usage_meta is not None:
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        usage = {"input": input_tokens, "prompt": system_prompt_tokens, "output": completion_tokens, "total": total_tokens}
+
+    return {"judgements": judgements, "raw_output": (output or "").strip(), "usage": usage}
+
+
+def adjudicate_fields_and_keywords(
+    model,
+    document_content: str,
+    matched_fields: List[str],
+    supplementary_fields_items: List[Dict[str, Any]],
+    matched_keywords: List[str],
+    supplementary_keywords_items: List[Dict[str, Any]],
+    temperature: float = 0.0,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """
+    使用 add_check.prompt 对领域与关键词进行一次性联合裁决。
+    返回 { field_judgements: [...], keyword_judgements: [...], usage, raw_output }
+    """
+    input_payload = {
+        "document_content": document_content,
+        "matched_fields": matched_fields,
+        "supplementary_fields": supplementary_fields_items,
+        "matched_keywords": matched_keywords,
+        "supplementary_keywords": supplementary_keywords_items,
+    }
+    json_input = json.dumps(input_payload, ensure_ascii=False, indent=2)
+    if debug:
+        print("[DEBUG] adjudicate_fields_and_keywords 请求入参(JSON):")
+        print(json_input)
+        print(f"[DEBUG] adjudicate_fields_and_keywords temperature={temperature}")
+
+    input_tokens = model.count_tokens(json_input).total_tokens
+    response = model.generate_content(
+        json_input,
+        generation_config={"temperature": max(0.0, min(1.0, float(temperature)))},
+    )
+    output: Optional[str] = getattr(response, "text", None)
+    if not output:
+        try:
+            candidates = response.candidates or []
+            if candidates and candidates[0].content and candidates[0].content.parts:
+                output = "".join(part.text for part in candidates[0].content.parts if hasattr(part, "text"))
+        except Exception:
+            output = None
+    if not output:
+        raise RuntimeError("未从模型获取到有效输出")
+    if debug:
+        print("[DEBUG] adjudicate_fields_and_keywords 原始输出:")
+        print((output or "").strip())
+
+    field_judgements: List[Dict[str, Any]] = []
+    keyword_judgements: List[Dict[str, Any]] = []
+    try:
+        output_clean = (output or "").strip()
+        start_idx = output_clean.find('{')
+        end_idx = output_clean.rfind('}') + 1
+        parsed = json.loads(output_clean[start_idx:end_idx] if start_idx != -1 and end_idx > start_idx else output_clean)
+        field_judgements = parsed.get("field_judgements", []) if isinstance(parsed, dict) else []
+        keyword_judgements = parsed.get("keyword_judgements", []) if isinstance(parsed, dict) else []
+    except Exception:
+        field_judgements, keyword_judgements = [], []
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = None
+    if usage_meta is not None:
+        prompt_tokens_api = getattr(usage_meta, "prompt_token_count", 0)
+        completion_tokens = getattr(usage_meta, "candidates_token_count", 0)
+        total_tokens = getattr(usage_meta, "total_token_count", 0)
+        system_prompt_tokens = prompt_tokens_api - input_tokens
+        usage = {"input": input_tokens, "prompt": system_prompt_tokens, "output": completion_tokens, "total": total_tokens}
+
+    return {"field_judgements": field_judgements, "keyword_judgements": keyword_judgements, "usage": usage, "raw_output": (output or "").strip()}
+
+
 
 def extract_all_tags(analysis_result: Dict[str, Any]) -> List[str]:
     """

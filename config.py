@@ -6,6 +6,7 @@ from pathlib import Path
 import configparser
 import textwrap
 import numpy as np
+import re
 
 # 动态检查并导入依赖
 try:
@@ -30,9 +31,21 @@ SEGMENTER_FILE = PROMPTS_DIR / "segmenter.prompt"
 TAG_FILE = PROMPTS_DIR / "tag.prompt"
 TAG_SEG_FILE = PROMPTS_DIR / "tag_seg.prompt"
 TAG_ADD_CHECK_FILE = PROMPTS_DIR / "tag_add_check.prompt"
-VOCAB_FILE = Path.cwd() / "init_tag_lab.json"
+FIELD_ADD_CHECK_FILE = PROMPTS_DIR / "field_add_check.prompt"
+ADD_CHECK_FILE = PROMPTS_DIR / "add_check.prompt"
+
+# 初始词库文件
+INIT_KEYWORD_FILE = Path.cwd() / "init_tag_lab.json"
+INIT_FIELD_FILE = Path.cwd() / "init_field_lab.json"
+INIT_TYPE_FILE = Path.cwd() / "init_type_lab.json"
+
+# 当前类型列表文件
+CURRENT_TYPE_FILE = Path.cwd() / "curr_type_lab.txt"
+
+# 向量数据库
 DB_PATH = Path.cwd() / "chroma_db_cosine"
-COLLECTION_NAME = "tag_embeddings_cosine"
+COLLECTION_KEYWORD = "keyword_embeddings_cosine"
+COLLECTION_FIELD = "field_embeddings_cosine"
 
 
 def load_config() -> dict:
@@ -102,7 +115,7 @@ def normalize_vector(vector: list) -> list:
     return normalized_vector.tolist()
 
 
-def init_vector_database() -> tuple:
+def _init_vector_collection(collection_name: str, vocab_words: list) -> tuple:
     """
     初始化向量数据库，如果数据库为空则填充数据。
     
@@ -113,24 +126,31 @@ def init_vector_database() -> tuple:
     client = chromadb.PersistentClient(path=str(DB_PATH))
     
     # 创建或获取集合，使用余弦距离
-    print(f"加载或创建集合: {COLLECTION_NAME} (使用余弦距离)")
+    print(f"加载或创建集合: {collection_name} (使用余弦距离)")
     collection = client.get_or_create_collection(
-        name=COLLECTION_NAME,
+        name=collection_name,
         metadata={"hnsw:space": "cosine"}
     )
     
     # 检查数据库是否需要填充数据
     if collection.count() == 0:
         print("数据库为空，正在从词库文件填充数据...")
-        
-        if not VOCAB_FILE.exists():
-            raise FileNotFoundError(f"错误: 词库文件 {VOCAB_FILE} 不存在。")
-            
-        with open(VOCAB_FILE, "r", encoding="utf-8") as f:
-            words = json.load(f)
-        
+        words = vocab_words or []
         if not isinstance(words, list) or not words:
-            raise ValueError(f"错误: {VOCAB_FILE} 内容格式不正确或为空。")
+            raise ValueError("错误: 词库内容格式不正确或为空。")
+
+        # 去重并清洗空项，保持顺序
+        cleaned_words = []
+        seen = set()
+        for w in words:
+            if not isinstance(w, (str, int, float)):
+                continue
+            s = str(w).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            cleaned_words.append(s)
+        words = cleaned_words
 
         try:
             base_url, model = load_embedding_config(CONFIG_FILE)
@@ -163,7 +183,79 @@ def init_vector_database() -> tuple:
     return client, collection
 
 
-def get_similar_tags(text: str, collection, n_results: int = 10) -> list:
+def _load_vocab_list(path: Path) -> list:
+    """
+    尝试以多种方式解析初始词库文件，容忍注释、尾逗号或非严格 JSON。
+    优先解析为 JSON 数组；失败时尝试提取引号中的字符串；再失败则逐行读取非空行。
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"未找到词库文件: {path}")
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    # 去除 BOM
+    if text and text[0] == "\ufeff":
+        text = text.lstrip("\ufeff")
+
+    # 移除 // 与 # 行注释，以及 /* ... */ 块注释
+    lines = []
+    for ln in text.splitlines():
+        if ln.strip().startswith("//") or ln.strip().startswith("#"):
+            continue
+        lines.append(ln)
+    text_nc = "\n".join(lines)
+    text_nc = re.sub(r"/\*.*?\*/", "", text_nc, flags=re.S)
+
+    # 首选严格 JSON
+    try:
+        data = json.loads(text_nc)
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if isinstance(x, (str, int, float)) and str(x).strip()]
+    except Exception:
+        pass
+
+    # 尝试提取引号中的字符串（适用于 JSON 数组但含尾逗号等问题）
+    try:
+        tokens = re.findall(r'"([^"]+)"', text_nc)
+        if tokens:
+            return [t.strip() for t in tokens if t.strip()]
+    except Exception:
+        pass
+
+    # 最后回退：逐行解析非空行
+    fallback = []
+    for ln in text_nc.splitlines():
+        val = ln.strip().strip(',')
+        if val:
+            fallback.append(val)
+    if fallback:
+        return fallback
+
+    raise ValueError(f"无法从 {path.name} 解析出有效的词条列表")
+
+
+def init_keyword_vector_database() -> tuple:
+    """
+    初始化/加载关键词向量库。
+    返回 (client, keyword_collection)
+    """
+    if not INIT_KEYWORD_FILE.exists():
+        raise FileNotFoundError(f"错误: 关键词初始文件 {INIT_KEYWORD_FILE} 不存在。")
+    words = _load_vocab_list(INIT_KEYWORD_FILE)
+    return _init_vector_collection(COLLECTION_KEYWORD, words)
+
+
+def init_field_vector_database() -> tuple:
+    """
+    初始化/加载领域向量库。
+    返回 (client, field_collection)
+    """
+    if not INIT_FIELD_FILE.exists():
+        raise FileNotFoundError(f"错误: 领域初始文件 {INIT_FIELD_FILE} 不存在。")
+    words = _load_vocab_list(INIT_FIELD_FILE)
+    return _init_vector_collection(COLLECTION_FIELD, words)
+
+
+def _get_similar(text: str, collection, n_results: int) -> list:
     """
     获取与输入文本最相似的标签。
     
@@ -201,7 +293,15 @@ def get_similar_tags(text: str, collection, n_results: int = 10) -> list:
     return [meta.get('word', 'N/A') for meta in metadatas]
 
 
-def update_vector_database(collection, new_tags: list) -> None:
+def get_similar_keywords(text: str, keyword_collection, n_results: int = 10) -> list:
+    return _get_similar(text, keyword_collection, n_results)
+
+
+def get_similar_fields(text: str, field_collection, n_results: int = 3) -> list:
+    return _get_similar(text, field_collection, n_results)
+
+
+def update_keyword_vector_database(collection, new_keywords: list) -> None:
     """
     将新标签添加到向量数据库中。
     
@@ -209,7 +309,7 @@ def update_vector_database(collection, new_tags: list) -> None:
         collection: ChromaDB集合
         new_tags (list): 新标签列表
     """
-    if not new_tags:
+    if not new_keywords:
         return
     
     try:
@@ -218,12 +318,12 @@ def update_vector_database(collection, new_tags: list) -> None:
         print(f"警告: 无法更新向量数据库 - 加载 Ollama 配置失败: {e}")
         return
     
-    print(f"正在将 {len(new_tags)} 个新标签添加到向量数据库...")
+    print(f"正在将 {len(new_keywords)} 个新关键词添加到向量数据库...")
     embeddings_to_add = []
     metadatas_to_add = []
     ids_to_add = []
     
-    for tag in new_tags:
+    for tag in new_keywords:
         # 检查标签是否已存在
         try:
             existing = collection.get(ids=[tag])
@@ -248,7 +348,45 @@ def update_vector_database(collection, new_tags: list) -> None:
             metadatas=metadatas_to_add,
             ids=ids_to_add
         )
-        print(f"成功添加 {len(embeddings_to_add)} 个新标签到向量数据库")
+        print(f"成功添加 {len(embeddings_to_add)} 个新关键词到向量数据库")
+
+
+def update_field_vector_database(collection, new_fields: list) -> None:
+    """
+    将新领域添加到向量数据库中。
+    """
+    if not new_fields:
+        return
+    try:
+        base_url, model = load_embedding_config(CONFIG_FILE)
+    except Exception as e:
+        print(f"警告: 无法更新向量数据库 - 加载 Ollama 配置失败: {e}")
+        return
+    print(f"正在将 {len(new_fields)} 个新领域添加到向量数据库...")
+    embeddings_to_add, metadatas_to_add, ids_to_add = [], [], []
+    for fld in new_fields:
+        try:
+            existing = collection.get(ids=[fld])
+            if existing['ids']:
+                continue
+        except:
+            pass
+        try:
+            resp_json = call_ollama_embeddings(base_url, model, fld)
+            vector = _extract_embedding(resp_json)
+            normalized_vector = normalize_vector(vector)
+            embeddings_to_add.append(normalized_vector)
+            metadatas_to_add.append({"word": fld})
+            ids_to_add.append(fld)
+        except Exception as e:
+            print(f"警告: 为领域 '{fld}' 生成向量时失败: {e}")
+    if embeddings_to_add:
+        collection.add(
+            embeddings=embeddings_to_add,
+            metadatas=metadatas_to_add,
+            ids=ids_to_add
+        )
+        print(f"成功添加 {len(embeddings_to_add)} 个新领域到向量数据库")
 
 
 def load_tag_prompt() -> str:
@@ -320,6 +458,25 @@ def load_tag_add_check_prompt() -> str:
     if not prompt_text:
         raise ValueError(f"{TAG_ADD_CHECK_FILE} 中的提示词内容为空")
     
+    return prompt_text
+
+
+def load_add_check_prompt() -> str:
+    """
+    从 prompts/add_check.prompt 中加载合并的领域/关键词判重提示词。
+    """
+    if not ADD_CHECK_FILE.exists():
+        raise FileNotFoundError(
+            f"未找到 {ADD_CHECK_FILE.as_posix()}，请确保文件存在"
+        )
+    try:
+        prompt_text = ADD_CHECK_FILE.read_text(encoding="utf-8")
+    except Exception as e:
+        raise ValueError(f"无法读取prompt文件: {e}")
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    prompt_text = textwrap.dedent(prompt_text).strip()
+    if not prompt_text:
+        raise ValueError(f"{ADD_CHECK_FILE} 中的提示词内容为空")
     return prompt_text
 
 
@@ -398,5 +555,43 @@ def init_files(force: bool = False) -> None:
             continue
         path.write_text(content + "\n", encoding="utf-8")
         print(f"已生成 {path.name}")
+
+    # 初始化 curr_type_lab.txt（如不存在且有 init_type_lab.json）
+    if not CURRENT_TYPE_FILE.exists() and INIT_TYPE_FILE.exists():
+        try:
+            types_list = json.loads(INIT_TYPE_FILE.read_text(encoding="utf-8"))
+            if isinstance(types_list, list) and types_list:
+                CURRENT_TYPE_FILE.write_text("\n".join(t.strip() for t in types_list if isinstance(t, str) and t.strip()) + "\n", encoding="utf-8")
+                print("已生成 curr_type_lab.txt")
+        except Exception as e:
+            print(f"警告：初始化 curr_type_lab.txt 失败：{e}")
+
+
+def load_current_types() -> list:
+    if not CURRENT_TYPE_FILE.exists():
+        return []
+    try:
+        lines = CURRENT_TYPE_FILE.read_text(encoding="utf-8").splitlines()
+        return [ln.strip() for ln in lines if ln.strip()]
+    except Exception:
+        return []
+
+
+def append_types_if_missing(new_types: list) -> None:
+    if not new_types:
+        return
+    existing = set(load_current_types())
+    added = False
+    for t in new_types:
+        if isinstance(t, str):
+            v = t.strip()
+            if v and v not in existing:
+                existing.add(v)
+                added = True
+    if added:
+        try:
+            CURRENT_TYPE_FILE.write_text("\n".join(sorted(existing)) + "\n", encoding="utf-8")
+        except Exception as e:
+            print(f"警告：写入 curr_type_lab.txt 失败：{e}")
 
 

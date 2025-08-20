@@ -51,9 +51,9 @@ def format_tag_analysis_result(result: Dict[str, Any]) -> Text:
         analysis = result["analysis_result"]
         similar_tags = result.get("similar_tags", [])
         
-        # 显示相似标签
+        # 显示候选关键词（来自相似检索）
         if similar_tags:
-            output.append("⚡ 检索到的相似标签:\n", style="bold blue")
+            output.append("⚡ 候选关键词(Top10):\n", style="bold blue")
             output.append(", ".join(similar_tags[:10]))
             output.append("\n\n")
         
@@ -66,30 +66,80 @@ def format_tag_analysis_result(result: Dict[str, Any]) -> Text:
             output.append(overall_summary)
             output.append("\n\n")
         
-        # 获取标签详情
-        tagging_details = parsed_result.get("tagging_details", {})
-        
-        # 显示匹配的标签
-        matched_tags = tagging_details.get("matched_tags", [])
-        if matched_tags:
-            output.append("✅ 匹配的标签:\n", style="bold green")
-            for tag in matched_tags:
-                output.append(f"  • {tag}\n")
+        # 优先显示新结构：types/fields/keywords
+        notes = ""
+        classification_details = parsed_result.get("classification_details", {}) or {}
+        keyword_details = parsed_result.get("keyword_details", {}) or {}
+
+        matched_types = classification_details.get("matched_types", parsed_result.get("matched_types", [])) or []
+        supplementary_types = classification_details.get("supplementary_types", parsed_result.get("supplementary_types", [])) or []
+        matched_fields = classification_details.get("matched_fields", parsed_result.get("matched_fields", [])) or []
+        supplementary_fields = classification_details.get("supplementary_fields", parsed_result.get("supplementary_fields", [])) or []
+        matched_keywords = keyword_details.get("matched_keywords", parsed_result.get("matched_keywords", [])) or []
+        supplementary_keywords = keyword_details.get("supplementary_keywords", parsed_result.get("supplementary_keywords", [])) or []
+
+        if matched_types or supplementary_types or matched_fields or supplementary_fields or matched_keywords or supplementary_keywords:
+            # Types
+            output.append("✅ 匹配的类型(Types):\n", style="bold green")
+            if matched_types:
+                for t in matched_types:
+                    output.append(f"  • {t}\n")
+            else:
+                output.append("  (none)\n")
+            if supplementary_types:
+                output.append("\n✨ 补充类型:\n", style="bold magenta")
+                for t in supplementary_types:
+                    output.append(f"  • {t}\n")
+
+            # Fields
+            output.append("\n✅ 匹配的领域(Fields):\n", style="bold green")
+            if matched_fields:
+                for f in matched_fields:
+                    output.append(f"  • {f}\n")
+            else:
+                output.append("  (none)\n")
+            if supplementary_fields:
+                output.append("\n✨ 补充领域:\n", style="bold magenta")
+                for f in supplementary_fields:
+                    output.append(f"  • {f}\n")
+
+            # Keywords
+            output.append("\n✅ 匹配的关键词(Keywords):\n", style="bold green")
+            if matched_keywords:
+                for k in matched_keywords:
+                    output.append(f"  • {k}\n")
+            else:
+                output.append("  (none)\n")
+            if supplementary_keywords:
+                output.append("\n✨ 补充关键词:\n", style="bold magenta")
+                for k in supplementary_keywords:
+                    output.append(f"  • {k}\n")
         else:
-            output.append("❌ 未找到匹配的标签\n", style="yellow")
-        
-        # 显示补充标签
-        supplementary_tags = tagging_details.get("supplementary_tags", [])
-        if supplementary_tags:
-            output.append("\n✨ 补充标签:\n", style="bold magenta")
-            for tag in supplementary_tags:
-                output.append(f"  • {tag}\n")
-        
-        # 显示分析说明
-        notes = tagging_details.get("tagging_notes", "")
-        if notes:
-            output.append("\n📝 分析说明:\n", style="bold cyan")
-            output.append(notes)
+            # 兼容旧结构：tagging_details
+            tagging_details = parsed_result.get("tagging_details", {})
+            matched_tags = tagging_details.get("matched_tags", [])
+            if matched_tags:
+                output.append("✅ 匹配的标签:\n", style="bold green")
+                for tag in matched_tags:
+                    output.append(f"  • {tag}\n")
+            else:
+                output.append("❌ 未找到匹配的标签\n", style="yellow")
+            supplementary_tags = tagging_details.get("supplementary_tags", [])
+            if supplementary_tags:
+                output.append("\n✨ 补充标签:\n", style="bold magenta")
+                for tag in supplementary_tags:
+                    output.append(f"  • {tag}\n")
+            notes = tagging_details.get("tagging_notes", "")
+            if notes:
+                output.append("\n📝 分析说明:\n", style="bold cyan")
+                output.append(notes)
+                output.append("\n")
+
+        # 额外备注（新结构下可能存在 extraction_notes）
+        extraction_notes = parsed_result.get("extraction_notes", "")
+        if extraction_notes:
+            output.append("\n📝 说明:\n", style="bold cyan")
+            output.append(extraction_notes)
             output.append("\n")
         
         # 显示分段摘要
@@ -97,12 +147,15 @@ def format_tag_analysis_result(result: Dict[str, Any]) -> Text:
         if segmented_summaries:
             output.append("\n📑 分段摘要:\n", style="bold yellow")
             for i, segment in enumerate(segmented_summaries, 1):
-                segment_summary = segment.get("segment_summary", "")
+                if isinstance(segment, dict):
+                    segment_summary = segment.get("segment_summary", "")
+                else:
+                    segment_summary = str(segment)
                 if segment_summary:
                     output.append(f"  {i}. {segment_summary}\n")
         
-        # 如果有JSON解析错误，显示原始输出
-        if "解析失败" in notes:
+        # 如果有JSON解析错误，显示原始输出（兼容新旧结构）
+        if isinstance(notes, str) and "解析失败" in notes:
             raw_output = analysis.get("raw_output", "")
             if raw_output:
                 output.append("\n🔍 原始输出:\n", style="dim")

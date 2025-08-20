@@ -16,7 +16,7 @@ Your task is a sequential, multi-step process. Follow these steps precisely.
 2.  **Suggest Title**: Propose a short, informative `suggested_title` (ideally <= 12 words).
 
 ---
-** Step 2: Candidate-Based Classification**
+**Step 2: Candidate-Based Classification**
 
 **Your goal is to accurately classify the document's type and field using the provided candidates as a primary reference.**
 
@@ -71,8 +71,6 @@ Your entire response must be ONLY the JSON object specified in the schema below.
 **[Schemas]**
 
 **Input Schema:**
-
-```json
 {
   "document_content": "string",
   "candidate_types": ["string", ...],
@@ -80,8 +78,7 @@ Your entire response must be ONLY the JSON object specified in the schema below.
   "candidate_keywords": ["string", ...]
 }
 
-**Output Schema:**
-```json
+Output Schema:
 {
   "overall_summary": "string",
   "suggested_title": "string",
@@ -97,7 +94,7 @@ Your entire response must be ONLY the JSON object specified in the schema below.
     "extraction_notes": "string"
   },
   "segmented_summaries": [
-    "segment_summary": "string",
+    { "segment_summary": "string" },
     ...
   ]
 }
